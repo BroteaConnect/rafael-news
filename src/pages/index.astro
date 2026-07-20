@@ -1,0 +1,91 @@
+---
+const PROJECT_NAME = 'Rafael Ojeda News';
+const PROJECT_SLUG = 'rafael-news';
+const PROJECT_DESCRIPTION = 'Personal brand and news hub for Rafael Ojeda, featuring his YouTube videos.';
+// Endpoint that receives requirement submissions (Brotea bot/orchestrator).
+const ENDPOINT = import.meta.env.PUBLIC_REQUIREMENTS_ENDPOINT ?? '';
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{PROJECT_NAME}</title>
+    <meta name="description" content={PROJECT_DESCRIPTION} />
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <h1>{PROJECT_NAME}</h1>
+        <p>{PROJECT_DESCRIPTION}</p>
+      </section>
+
+      <section class="form-card">
+        <h2>Tell us what you need</h2>
+        <p>Your input shapes what gets built first.</p>
+        <form id="requirements-form" data-endpoint={ENDPOINT} data-project={PROJECT_SLUG}>
+          <label>
+            Name
+            <input type="text" name="name" required maxlength="120" />
+          </label>
+          <label>
+            Email
+            <input type="email" name="email" required maxlength="200" />
+          </label>
+          <label>
+            What should this project do for you?
+            <textarea name="content" required rows="5" maxlength="4000"></textarea>
+          </label>
+          <button type="submit">Send</button>
+          <p id="form-status" role="status"></p>
+        </form>
+      </section>
+    </main>
+
+    <script>
+      const form = document.getElementById('requirements-form');
+      const status = document.getElementById('form-status');
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const endpoint = form.dataset.endpoint;
+        if (!endpoint) {
+          status.textContent = 'Submissions are not enabled yet.';
+          return;
+        }
+        const data = Object.fromEntries(new FormData(form));
+        status.textContent = 'Sending…';
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              project: form.dataset.project,
+              source: 'landing_form',
+              submitted_by: `${data.name} <${data.email}>`,
+              content: data.content,
+            }),
+          });
+          if (!res.ok) throw new Error(String(res.status));
+          form.reset();
+          status.textContent = 'Thank you! We received your input.';
+        } catch {
+          status.textContent = 'Something went wrong — please try again later.';
+        }
+      });
+    </script>
+
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: system-ui, sans-serif; color: #1a1a1a; background: #fafafa; }
+      main { max-width: 640px; margin: 0 auto; padding: 4rem 1.5rem; }
+      .hero h1 { font-size: 2.5rem; margin: 0 0 .5rem; }
+      .hero p { font-size: 1.15rem; color: #444; }
+      .form-card { margin-top: 3rem; background: #fff; border: 1px solid #e2e2e2; border-radius: 12px; padding: 2rem; }
+      label { display: block; margin-bottom: 1rem; font-weight: 600; }
+      input, textarea { display: block; width: 100%; margin-top: .35rem; padding: .6rem; border: 1px solid #ccc; border-radius: 8px; font: inherit; }
+      button { padding: .7rem 1.6rem; border: 0; border-radius: 8px; background: #1a7f37; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+      button:hover { background: #166b2f; }
+      #form-status { min-height: 1.2em; color: #555; }
+    </style>
+  </body>
+</html>
