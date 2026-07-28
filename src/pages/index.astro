@@ -12,6 +12,8 @@ const ENDPOINT = import.meta.env.PUBLIC_REQUIREMENTS_ENDPOINT ?? '';
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{PROJECT_NAME}</title>
     <meta name="description" content={PROJECT_DESCRIPTION} />
+    <!-- brotea:head -->
+    <script is:inline defer src={import.meta.env.PUBLIC_UMAMI_SRC} data-website-id={import.meta.env.PUBLIC_UMAMI_WEBSITE_ID}></script>
   </head>
   <body>
     <main>
