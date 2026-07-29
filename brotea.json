@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "composer": "0.2.0",
+  "stack": "astro",
+  "features": {
+    "analytics": {
+      "version": "1.0.0",
+      "services": [
+        "umami"
+      ]
+    },
+    "error-tracking": {
+      "version": "1.0.1",
+      "services": [
+        "glitchtip"
+      ]
+    }
+  }
+}
