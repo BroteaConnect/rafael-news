@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "composer": "0.2.0",
+  "composer": "0.3.0",
   "stack": "astro",
   "features": {
     "analytics": {
@@ -15,5 +15,9 @@
         "glitchtip"
       ]
     }
+  },
+  "theme": {
+    "name": "brotea",
+    "version": "2.0.0"
   }
 }

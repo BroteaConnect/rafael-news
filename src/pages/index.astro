@@ -1,4 +1,5 @@
 ---
+import '../styles/theme.css';
 const PROJECT_NAME = 'Rafael Ojeda News';
 const PROJECT_SLUG = 'rafael-news';
 const PROJECT_DESCRIPTION = 'Personal brand and news hub for Rafael Ojeda, featuring his YouTube videos.';
@@ -79,16 +80,16 @@ const ENDPOINT = import.meta.env.PUBLIC_REQUIREMENTS_ENDPOINT ?? '';
 
     <style>
       * { box-sizing: border-box; }
-      body { margin: 0; font-family: system-ui, sans-serif; color: #1a1a1a; background: #fafafa; }
-      main { max-width: 640px; margin: 0 auto; padding: 4rem 1.5rem; }
+      body { margin: 0; font-family: var(--font-sans); color: var(--text); background: var(--bg); }
+      main { max-width: var(--container); margin: 0 auto; padding: 4rem 1.5rem; }
       .hero h1 { font-size: 2.5rem; margin: 0 0 .5rem; }
-      .hero p { font-size: 1.15rem; color: #444; }
-      .form-card { margin-top: 3rem; background: #fff; border: 1px solid #e2e2e2; border-radius: 12px; padding: 2rem; }
+      .hero p { font-size: 1.15rem; color: var(--muted); }
+      .form-card { margin-top: 3rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 2rem; }
       label { display: block; margin-bottom: 1rem; font-weight: 600; }
-      input, textarea { display: block; width: 100%; margin-top: .35rem; padding: .6rem; border: 1px solid #ccc; border-radius: 8px; font: inherit; }
-      button { padding: .7rem 1.6rem; border: 0; border-radius: 8px; background: #1a7f37; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
-      button:hover { background: #166b2f; }
-      #form-status { min-height: 1.2em; color: #555; }
+      input, textarea { display: block; width: 100%; margin-top: .35rem; padding: .6rem; border: 1px solid var(--border); border-radius: var(--radius); font: inherit; }
+      button { padding: .7rem 1.6rem; border: 0; border-radius: var(--radius); background: var(--primary); color: var(--primary-contrast); font: inherit; font-weight: 600; cursor: pointer; }
+      button:hover { filter: brightness(0.92); }
+      #form-status { min-height: 1.2em; color: var(--muted); }
     </style>
   </body>
 </html>
