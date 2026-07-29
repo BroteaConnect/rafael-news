@@ -15,6 +15,9 @@
     if (sent >= 10) return;
     sent++;
     var body = JSON.stringify({
+      // GlitchTip's store API rejects events without an event_id (422).
+      event_id: (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '') :
+        String(Date.now()) + Math.random().toString(16).slice(2, 18)),
       platform: 'javascript',
       level: 'error',
       exception: { values: [{ type: exType || 'Error', value: String(exValue || 'unknown') }] },
