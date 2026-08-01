@@ -1,0 +1,14 @@
+{
+  "form.disabled": "Todavía no se pueden enviar mensajes.",
+  "form.email": "Email",
+  "form.error": "Algo ha fallado — vuelve a intentarlo en un rato.",
+  "form.message": "¿Qué quieres que haga este proyecto?",
+  "form.name": "Nombre",
+  "form.sending": "Enviando…",
+  "form.submit": "Enviar",
+  "form.subtitle": "Lo que nos cuentes decide qué se construye primero.",
+  "form.thanks": "¡Gracias! Hemos recibido tu mensaje.",
+  "form.title": "Cuéntanos qué necesitas",
+  "hero.tagline": "Marca personal y centro de noticias de Rafael Ojeda, con sus vídeos de YouTube.",
+  "nav.language": "Idioma"
+}
