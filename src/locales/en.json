@@ -1,0 +1,14 @@
+{
+  "form.disabled": "Submissions are not enabled yet.",
+  "form.email": "Email",
+  "form.error": "Something went wrong — please try again later.",
+  "form.message": "What should this project do for you?",
+  "form.name": "Name",
+  "form.sending": "Sending…",
+  "form.submit": "Send",
+  "form.subtitle": "Your input shapes what gets built first.",
+  "form.thanks": "Thank you! We received your input.",
+  "form.title": "Tell us what you need",
+  "hero.tagline": "Personal brand and news hub for Rafael Ojeda, featuring his YouTube videos.",
+  "nav.language": "Language"
+}
