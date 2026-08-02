@@ -12,7 +12,10 @@ const PROJECT_NAME = 'Rafael Ojeda News';
 const PROJECT_SLUG = 'rafael-news';
 const PROJECT_DESCRIPTION = 'Personal brand and news hub for Rafael Ojeda, featuring his YouTube videos.';
 // Endpoint that receives requirement submissions (Brotea bot/orchestrator).
-const ENDPOINT = import.meta.env.PUBLIC_REQUIREMENTS_ENDPOINT ?? '';
+// `||`, nunca `??`: el ARG del Dockerfile vale "" por defecto, que NO es
+// nullish, así que `??` dejaba el formulario muerto en cualquier build sin
+// la variable de Coolify. El default compilado lo hace imposible.
+const ENDPOINT = import.meta.env.PUBLIC_REQUIREMENTS_ENDPOINT?.trim() || 'https://api.brotea.dev/requirements';
 ---
 
 <html lang={locale} dir={dirOf(locale)}>
@@ -68,7 +71,9 @@ const ENDPOINT = import.meta.env.PUBLIC_REQUIREMENTS_ENDPOINT ?? '';
     </main>
 
     <script>
-      const form = document.getElementById('requirements-form');
+      // tipado explícito: getElementById devuelve HTMLElement, y sin esto
+      // `form.reset()` y `new FormData(form)` no compilan (astro check)
+      const form = document.getElementById('requirements-form') as HTMLFormElement;
       const status = document.getElementById('form-status');
       form.addEventListener('submit', async (e) => {
         e.preventDefault();

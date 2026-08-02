@@ -1,0 +1,5 @@
+{
+  "extends": "astro/tsconfigs/base",
+  "//": "Fichero SEMILLA: lo pone `brotea quality sync` solo si la app no tiene tsconfig, y a partir de ahí es de la app (nunca se sobrescribe). Arranca en `base`, no en `strict`, a propósito: adoptar la comprobación de tipos en una app que nunca la tuvo con el listón alto la deja en rojo el primer día y el gate acaba desactivado. Subir a `strict` es un PR de la app, cuando toque.",
+  "exclude": ["dist", ".astro", "wt-*"]
+}
