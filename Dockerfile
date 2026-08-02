@@ -24,9 +24,11 @@ ENV PUBLIC_UMAMI_SRC=$PUBLIC_UMAMI_SRC
 
 RUN npm run build
 
-# A build without the endpoint ships a permanently disabled form; fail fast.
-RUN test -n "$PUBLIC_REQUIREMENTS_ENDPOINT" \
- && grep -qF "$PUBLIC_REQUIREMENTS_ENDPOINT" dist/index.html
+# Un build sin endpoint sirve un formulario muerto: fallar pronto. Se comprueba
+# el RESULTADO (el HTML lleva una URL real), no la variable de entrada: desde
+# que la página tiene default compilado, exigir la variable era pedir algo que
+# ya no hace falta y rompía cualquier build fuera de Coolify.
+RUN grep -q 'data-endpoint="https://[^"]*"' dist/index.html
 
 # Stage 2: serve the built dist/ with nginx
 FROM nginx:alpine
