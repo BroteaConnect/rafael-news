@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { getSearchIndex } from '../../lib/content/seed';
+import { getSearchIndex } from '../../lib/content/store';
 import { resolveLocale } from '../../lib/route';
 
 // El índice del buscador de la cabecera, un idioma por respuesta. Se cachea

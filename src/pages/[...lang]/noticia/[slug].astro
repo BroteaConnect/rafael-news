@@ -1,7 +1,7 @@
 ---
 import Layout from '../../../layouts/Layout.astro';
 import StoryGrid from '../../../components/StoryGrid.astro';
-import { getStoriesByTopic, getStory } from '../../../lib/content/seed';
+import { getStoriesByTopic, getStory } from '../../../lib/content/store';
 import { formatDate } from '../../../lib/format';
 import { localePath, t } from '../../../lib/i18n';
 import { resolveLocale } from '../../../lib/route';
@@ -54,10 +54,13 @@ const jsonLd = {
       </p>
     </header>
 
-    {/* El cuerpo del artículo llega con la redacción (F2/F6). La página dice
-        qué le falta en vez de fingir un texto que no existe. */}
+    {/* El cuerpo ya viene de la base de datos, saneado al guardarse. Mientras
+        la redacción no lo escriba, la página dice qué le falta en vez de
+        fingir un texto —y menos aún un análisis de mercado— que nadie firmó. */}
     <div class="body measure">
-      <p>{t(locale, 'article.body-pending')}</p>
+      {story.body
+        ? <Fragment set:html={story.body} />
+        : <p class="pending">{t(locale, 'article.body-pending')}</p>}
     </div>
 
     {related.length > 0 && (
@@ -90,4 +93,20 @@ const jsonLd = {
   /* La prosa se lee a `--measure`, no al ancho del portal: 1200px de línea es
    * ilegible por muchos tokens que se usen. */
   .body { margin-block: var(--space-5); }
+  /* La prosa del artículo: interlineado de lectura larga y ritmo entre
+   * párrafos. `:global()` porque el HTML llega de la base de datos y no lleva
+   * el atributo de ámbito que Astro pone a lo que escribe la plantilla. */
+  .body :global(p) { margin-block: 0 var(--space-4); }
+  .body :global(h2) { font-size: 1.5rem; margin-block: var(--space-5) var(--space-3); }
+  .body :global(h3) { font-size: 1.25rem; margin-block: var(--space-4) var(--space-2); }
+  .body :global(ul), .body :global(ol) { margin-block: 0 var(--space-4); padding-inline-start: var(--space-5); }
+  .body :global(li) { margin-block-end: var(--space-2); }
+  .body :global(blockquote) {
+    margin: var(--space-4) 0;
+    padding-inline-start: var(--space-4);
+    border-inline-start: 3px solid var(--primary);
+    color: var(--muted);
+  }
+  .body :global(a) { color: var(--primary); }
+  .pending { color: var(--muted); }
 </style>
