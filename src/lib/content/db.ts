@@ -9,11 +9,13 @@ import pg from 'pg';
 // producción solo copia dist/, así que un fichero suelto en el repo no llegaría
 // y la migración fallaría solo en producción, que es donde peor se descubre.
 import migration001 from '../../migrations/001_content.sql?raw';
+import migration002 from '../../migrations/002_newsletter.sql?raw';
 import seedData from './seed.data.json';
 import type { ContentSource, Localized, Story, TopicId } from './types';
 
 const MIGRATIONS: ReadonlyArray<readonly [string, string]> = [
   ['001_content', migration001],
+  ['002_newsletter', migration002],
 ];
 
 let pool: pg.Pool | null = null;
