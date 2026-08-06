@@ -48,6 +48,9 @@ export interface Story {
   standfirst: Localized;
   /** el destacado del día; exactamente uno */
   lead: boolean;
+  /** cuerpo ya renderizado y saneado, por idioma. Opcional: una noticia sin
+   *  cuerpo se muestra con su entradilla en vez de con un texto inventado */
+  body?: Localized;
 }
 
 export interface Quote {
@@ -116,5 +119,7 @@ export interface StoryView {
   readingMinutes: number;
   title: string;
   standfirst: string;
+  /** HTML ya saneado, o cadena vacía si la redacción aún no lo escribió */
+  body: string;
   author: AuthorView;
 }
