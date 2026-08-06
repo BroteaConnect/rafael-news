@@ -9,7 +9,8 @@ Until feature 57 it was a static site served by nginx; it is not any more.
 The `Dockerfile` at the repo root has three stages:
 
 1. **deps** — `node:22-alpine`, `npm ci --omit=dev`: the modules the server
-   needs at runtime, without the dev half (typescript, `@astrojs/check`).
+   needs at runtime (`astro`, `@astrojs/node`, `pg`), without the dev half
+   (typescript, `@astrojs/check`, `@types/pg`).
 2. **build** — `npm ci` + `npm run build`, producing `dist/server/` (the node
    server) and `dist/client/` (assets). **There is no `dist/index.html`
    any more** — anything that greps for it is broken by definition.
@@ -24,6 +25,52 @@ docker build -t rafael-news .
 docker run -p 8080:4321 rafael-news
 curl -i localhost:8080/healthz   # 200
 ```
+
+## Runtime env: `DATABASE_URL`
+
+The Postgres connection string for the editorial content. **Runtime variable,
+never a build ARG** — a credential is not baked into an image.
+
+```bash
+docker run -p 8080:4321 -e DATABASE_URL='postgres://…' rafael-news
+```
+
+What the app does with it, at boot only (never during a request):
+
+| `DATABASE_URL` | Behaviour |
+| --- | --- |
+| unset | Logs `sin DATABASE_URL: se sirve la semilla` and serves the bundled seed. This is local dev and CI. |
+| set, reachable | Applies the migrations, seeds the tables if `stories` is empty, loads the snapshot, `LISTEN contenido`. |
+| set, unreachable | Logs the error and serves the seed anyway. The container still starts and `/healthz` still answers `200`. |
+
+Once running, **the reader never waits for Postgres**: pages render from the
+in-memory snapshot. A database restart is not a public incident — only
+publishing stops until the connection comes back (the listener retries every
+5s). See [architecture.md](./architecture.md#content-layer).
+
+## Migrations
+
+There is no migration command and no console in the runtime image. `migrate()`
+in `src/lib/content/db.ts` runs every entry of its `MIGRATIONS` list at boot —
+today just `['001_content']` — so **deploying is applying the migration**.
+
+Every migration is re-executed on every boot, which is why each one *must* be
+idempotent: `001_content.sql` uses `CREATE TABLE IF NOT EXISTS`,
+`CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE FUNCTION`,
+`DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` and `INSERT … ON CONFLICT DO
+NOTHING`, and records itself in `schema_migrations`. A new migration means a new
+`.sql` file under `src/migrations/` **plus** its entry in `MIGRATIONS`; the file
+alone does nothing.
+
+The SQL is imported with `?raw` (`import migration001 from
+'../../migrations/001_content.sql?raw'`), so it is bundled inside
+`dist/server/`. The runtime stage only copies `dist/`, `package.json` and
+`node_modules` — a loose `.sql` file in the repo would never reach the
+container, and the migration would fail in production only.
+
+On the first boot against an empty database, `seedIfEmpty()` inserts
+`src/lib/content/seed.data.json` in a single transaction, so the deploy that
+switched the source did not change a pixel of the home page.
 
 ## Service contract
 
@@ -59,6 +106,8 @@ RUN grep -rqE 'https://[a-z0-9.-]+/requirements' dist/server/
   the build on `/app/dist`.
 - Exposed port: **4321** (was 80 under nginx).
 - Optional build ARG: `PUBLIC_REQUIREMENTS_ENDPOINT`.
+- Runtime env var: `DATABASE_URL`, pointing at the app's Postgres service.
+  Set it as a runtime variable, not a build one.
 - Source: `BroteaConnect/rafael-news`, branch `main`.
 
 ## URLs
@@ -66,6 +115,17 @@ RUN grep -rqE 'https://[a-z0-9.-]+/requirements' dist/server/
 Spanish is the default language and lives at `/`; English lives at `/en/`.
 The old `/es/*` URLs are 301-redirected to their unprefixed equivalent by
 `astro.config.mjs`, so indexed links keep working.
+
+`site: 'https://rafael-news.brotea.dev'` in `astro.config.mjs` is the canonical
+origin: canonical tags, hreflang alternates, `/rss.xml` and `/sitemap.xml` all
+build their absolute URLs from it. Both feeds are generated per request from the
+content snapshot, so there is no build step or cron to keep them fresh.
+
+Public HTML responses carry a weak `ETag` derived from the content version and
+`Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=86400`
+(`/healthz` and `/api/*` excluded). A shared cache in front of the app absorbs
+traffic, keeps serving while the origin restarts, and stops serving stale HTML
+within a minute of a publication.
 
 ## Release process
 
