@@ -14,11 +14,6 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
 
-# Destino del alta al boletín. Astro incrusta las PUBLIC_* en el bundle al
-# construir, así que tiene que estar presente ANTES de `npm run build`.
-ARG PUBLIC_REQUIREMENTS_ENDPOINT
-ENV PUBLIC_REQUIREMENTS_ENDPOINT=$PUBLIC_REQUIREMENTS_ENDPOINT
-
 # Las PUBLIC_* se incrustan en el bundle en tiempo de build. El compositor
 # cablea un par ARG/ENV por capacidad justo debajo de este ancla.
 # brotea:build-args
@@ -33,12 +28,16 @@ ENV PUBLIC_UMAMI_SRC=$PUBLIC_UMAMI_SRC
 
 RUN npm run build
 
-# Un build sin destino sirve un alta muerta: fallar pronto. Se comprueba el
-# RESULTADO —que dentro del bundle de servidor viaja una URL absoluta de alta— y
-# no la variable de entrada, porque desde que la ruta tiene default compilado
-# exigir la variable rompía cualquier build fuera de Coolify. Antes esto miraba
-# dist/index.html, que con el adaptador de node ya no existe.
-RUN grep -rqE 'https://[a-z0-9.-]+/requirements' dist/server/
+# Un alta que no lleva a ninguna parte es el fallo silencioso de este portal, y
+# esta comprobación ha ido cambiando con lo que había que garantizar cada vez:
+#   1. que dist/index.html llevara el endpoint del formulario  (estático)
+#   2. que el bundle de servidor llevara la URL del recolector  (SSR)
+#   3. hoy: que la RUTA del alta exista dentro del bundle
+# El alta ya no viaja a ningún tercero —escribe en nuestro Postgres—, así que
+# exigir una URL externa era exigir algo que dejó de ser cierto: el gate se
+# puso rojo por hacer bien su trabajo. Lo que sigue siendo verdad es que sin
+# esta ruta el formulario de la portada no tiene con quién hablar.
+RUN grep -rq 'api/newsletter' dist/server/
 
 FROM node:22-alpine
 WORKDIR /app
