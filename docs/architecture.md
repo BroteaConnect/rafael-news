@@ -4,6 +4,9 @@ Brotea News is an Astro app with `output: 'server'` (node adapter, standalone):
 **every route is rendered per request**, no page opts into prerendering.
 Editorial content lives in Postgres, but a request never queries it: pages read
 an in-memory snapshot behind async accessors (see [Content layer](#content-layer)).
+The exception is the newsletter, which writes and reads its own table per
+request (see [Newsletter](#newsletter-double-opt-in)) — no reader waits on
+Postgres to see a story, only to subscribe.
 Runtime and packaging live in [deployment.md](./deployment.md).
 
 ## Routes
@@ -21,6 +24,8 @@ one per language.
 | `/noticia/<slug>` | `/en/noticia/<slug>` | `[...lang]/noticia/[slug].astro` | story page: sanitised `body` HTML (or the pending notice) + `NewsArticle` JSON-LD + related |
 | `/tema/<slug>` | `/en/tema/<slug>` | `[...lang]/tema/[slug].astro` | stories of one topic |
 | `/autor/<slug>` | `/en/autor/<slug>` | `[...lang]/autor/[slug].astro` | author page + their stories |
+| `/boletin/confirmar` | `/en/boletin/confirmar` | `[...lang]/boletin/confirmar.astro` | confirms a subscription from `?t=<token>` |
+| `/boletin/baja` | `/en/boletin/baja` | `[...lang]/boletin/baja.astro` | one-click unsubscribe from `?t=<token>` |
 | `/legal` | `/en/legal` | `[...lang]/legal.astro` | notice / `#privacidad` / `#cookies` |
 | `/search-index.json` | `/en/search-index.json` | `[...lang]/search-index.json.ts` | `GET` search index (JSON) |
 | `/404` | `/404` | `404.astro` | 404 page, always in the default locale |
@@ -30,7 +35,7 @@ Locale-agnostic endpoints (no language prefix):
 | Route | File | Behaviour |
 | --- | --- | --- |
 | `GET /healthz` | `src/pages/healthz.ts` | `200 {"ok":true,"commit":"<sha or null>"}`, `Cache-Control: no-store` |
-| `POST /api/newsletter` | `src/pages/api/newsletter.ts` | `202` accepted, `400` invalid email, `502` upstream failed |
+| `POST /api/newsletter` | `src/pages/api/newsletter.ts` | subscription request, double opt-in: `202` accepted, `400` invalid email, `429` rate limited, `500`/`503` (see [Newsletter](#newsletter-double-opt-in)) |
 | `GET /rss.xml` | `src/pages/rss.xml.ts` | RSS 2.0 feed of every story, default locale only (`<language>es-ES</language>`) |
 | `GET /sitemap.xml` | `src/pages/sitemap.xml.ts` | every URL in every locale, each with `xhtml:link` hreflang alternates |
 
@@ -58,6 +63,9 @@ curl -i -X POST localhost:4321/api/newsletter \
   -H 'Content-Type: application/json' \
   -d '{"email":"lector@example.com","locale":"es"}'
 # HTTP/1.1 202 Accepted → {"message":"<translated>"}
+
+curl -s 'localhost:4321/boletin/confirmar?t=<token>'   # confirmation page
+curl -s 'localhost:4321/en/boletin/baja?t=<token>'     # unsubscribe page
 
 curl -s localhost:4321/rss.xml | head -5
 curl -s localhost:4321/sitemap.xml | head -5
@@ -218,6 +226,144 @@ Rules:
   `snapshot.ts` import it — as the cold-start fallback and as the rows loaded on
   first run.
 
+## Newsletter (double opt-in)
+
+Subscriptions live in this app's own Postgres. Until feature 59 the form
+forwarded the address server-side to the factory's requirements collector
+(`PUBLIC_REQUIREMENTS_ENDPOINT`); **that forwarding is gone** — no address
+leaves the app any more, and there is no build-time endpoint to configure.
+
+An address is not a subscriber until the reader clicks the link that only
+reaches their inbox:
+
+```mermaid
+graph TD
+  R[Reader] -->|POST /api/newsletter| A[api/newsletter.ts]
+  A -->|row 'pending' + token hash| DB[(Postgres)]
+  A -->|confirmation email| M[SMTP]
+  R -->|clicks the link| C[GET /boletin/confirmar?t=…]
+  C -->|status='confirmed'| DB
+  R -->|clicks unsubscribe| B[GET /boletin/baja?t=…]
+  B -->|status='unsubscribed'| DB
+```
+
+```
+src/lib/newsletter/core.ts   pure logic: email normalisation, tokens, expiry, rate limiter
+src/lib/newsletter/store.ts  Postgres: signup(), confirm(), unsubscribe()
+src/lib/newsletter/mail.ts   SMTP (nodemailer): sendConfirmation()
+src/pages/api/newsletter.ts  the POST endpoint
+src/pages/[...lang]/boletin/confirmar.astro   confirmation page
+src/pages/[...lang]/boletin/baja.astro        unsubscribe page
+src/migrations/002_newsletter.sql             the schema
+```
+
+`core.ts` deliberately imports nothing but `node:crypto`, so the whole of it
+runs under `node --test` (see [Testing](#testing)). It has its own pool
+(`max: 3`) in `store.ts`: the newsletter must never contend with the content
+layer's connections.
+
+### `POST /api/newsletter`
+
+Request body is JSON; `locale` is optional and falls back to the default locale
+if it is not a published one. Every response is
+`{"message":"<already translated>"}` with `Cache-Control: no-store`.
+
+| Status | When |
+| --- | --- |
+| `202` | Accepted. Returned for a brand-new address, a pending one **and** an already-confirmed one — see below |
+| `400` | `email` missing or not shaped like an address (`newsletter.invalid`) |
+| `429` | Rate limited (`newsletter.too-many`) |
+| `503` | No `DATABASE_URL`: nobody can be signed up (`newsletter.error`) |
+| `500` | The insert failed (`newsletter.error`) |
+| `405` | `GET` on the route, answering `{"message":"POST {email, locale}","max_email":200}` |
+
+**The response never distinguishes a new address from a subscribed one.** If it
+did, the public form would be a checker for who reads this outlet. An
+already-confirmed address gets the same `202` and no second email.
+
+Rate limits are in-memory, per process, sliding window (`RateLimiter`):
+
+| Key | Limit |
+| --- | --- |
+| IP (first entry of `x-forwarded-for`, else `clientAddress`) | 5 per minute |
+| Email address | 3 per hour |
+
+Storing an address is cheap; **sending** one is not, which is what the limits
+protect. The map is cleared wholesale past 10 000 keys so a rotating IP cannot
+turn the defence into a memory leak.
+
+Email validation is deliberately loose (`^[^\s@]+@[^\s@]+\.[^\s@]{2,}$`, max
+200 chars, trimmed and lower-cased): only nonsense is rejected. Who owns the
+mailbox is decided by the confirmation email, not by a regex.
+
+### Data model
+
+`src/migrations/002_newsletter.sql`, applied at boot like every other migration
+(see [deployment.md](./deployment.md#migrations)). It needs the `citext`
+extension (`CREATE EXTENSION IF NOT EXISTS citext`).
+
+| Column | Notes |
+| --- | --- |
+| `id` | `bigint GENERATED ALWAYS AS IDENTITY` PK |
+| `email` | `citext NOT NULL UNIQUE` — `Ana@x.com` and `ana@x.com` are one subscriber, not two |
+| `locale` | `text NOT NULL DEFAULT 'es'`; refreshed on every signup attempt |
+| `status` | `pending \| confirmed \| unsubscribed`, `CHECK`-constrained, default `pending` |
+| `token_hash` | `NOT NULL`, sha256 hex. **The clear-text token is never stored** |
+| `token_expires_at` | `timestamptz`, `NULL` = never expires |
+| `confirmed_at`, `unsubscribed_at` | `timestamptz` |
+| `source` | `text NOT NULL DEFAULT 'portada'`; the endpoint writes `'portada'` |
+| `created_at`, `updated_at` | `timestamptz NOT NULL DEFAULT now()` |
+
+Indexes: `newsletter_token_idx (token_hash)` and `newsletter_status_idx
+(status)`. Only the hash is indexed because only the hash is ever looked up.
+
+### Token lifecycle
+
+One token per row, 32 random bytes (`randomBytes(32).toString('base64url')`),
+travelling in clear only to the subscriber's inbox; the table holds
+`sha256(token)` and comparison is `timingSafeEqual` on the decoded digests, so
+neither a database dump nor response timing hands out someone else's link.
+
+| Event | Effect on the row |
+| --- | --- |
+| First signup | `pending`, new token, `token_expires_at = now + 72h` (`CONFIRM_TTL_HOURS`) |
+| Signup again while `pending` | Token **renewed** and the 72 h restarted — insisting must not mean waiting three days for a lost link |
+| Signup again while `confirmed` | Token and expiry left untouched (an unsubscribe link already in an inbox keeps working), no email sent |
+| Signup again while `unsubscribed` | New token + email; the row only returns to `confirmed` if the link is clicked again — resubscribing is a fresh double opt-in |
+| `/boletin/confirmar?t=…` | `status='confirmed'`, `confirmed_at=now()`, `token_expires_at=NULL` |
+| Confirming twice | Still success: a mail client that pre-fetches links must not break the page |
+| Expired token | `boletin.caducado.*` page; the reader is told to sign up again |
+| Unknown or missing token | `boletin.invalido.*` page |
+| `/boletin/baja?t=…` | `status='unsubscribed'`, `unsubscribed_at=now()` |
+
+**The unsubscribe token never expires.** After confirmation the row keeps its
+`token_hash` with a `NULL` expiry, so the same link works forever: a dead
+unsubscribe link forces a reader to write an email to exercise a right they
+already have.
+
+Both are **pages**, not JSON: whoever clicks from an inbox is a person with a
+browser, and gets the outlet's design and a link back home (`boletin.volver`).
+They resolve the locale like every other page, so `/xx/boletin/baja` 404s.
+
+### What the app does *not* do
+
+- It sends exactly one kind of email: the confirmation. The newsletter itself is
+  not sent by this feature, so a confirmed address receives nothing else.
+- **No open tracking**, no pixel, no third party: the only outbound traffic is
+  SMTP.
+- **Nothing deletes rows.** Unsubscribing is a status change, which is what
+  keeps a former subscriber from being silently re-added; erasure requests are
+  handled out of band, as the privacy notice at `/legal#privacidad` says. There
+  is no endpoint or job that deletes subscriber data.
+
+### Degraded modes
+
+| Situation | Behaviour |
+| --- | --- |
+| SMTP not configured (`SMTP_HOST`/`SMTP_USER`/`SMTP_PASS` missing) | `sendConfirmation` logs a warning, returns `false`, the row stays `pending` and the reader still gets `202` |
+| SMTP configured but failing | Same: the error is logged, never thrown. The mail provider's bad day is not the reader's fault |
+| No `DATABASE_URL` | `503` and a logged error — unlike the content layer, there is no seed to fall back on |
+
 ## Copy vs content
 
 Two different things, and they live in two different places.
@@ -225,6 +371,9 @@ Two different things, and they live in two different places.
 - **UI chrome** — nav labels, section headings, buttons, form messages, footer,
   `aria-label`s: `src/locales/es.json` and `src/locales/en.json`, reaching the
   markup only through `t(locale, 'key')`. Never hardcoded in a component.
+  **The confirmation email is copy too**: subject, greeting, body, CTA and the
+  "ignore this" line are `mail.confirm.*` keys, not a template inside
+  `mail.ts` — an email that only exists in Spanish is half a bilingual portal.
 - **Editorial content** — headlines, standfirsts, topic names, the author bio,
   market instrument names: `Localized` fields inside the content model. A
   headline is a row, not interface copy: it lives in `story_i18n` /
@@ -245,7 +394,10 @@ Two different things, and they live in two different places.
    dynamic family means adding it there.
 
 Without (5) a missing key silently falls back to Spanish and the page ships half
-translated with green CI.
+translated with green CI. That is also what forces the newsletter's key families
+(`newsletter.*`, `boletin.*`, `mail.confirm.*`) into **both** dictionaries: they
+are read from `.astro` and `.ts` sources like any other key, so a Spanish-only
+confirmation email fails the test instead of the reader.
 
 ## Components
 
@@ -260,7 +412,7 @@ component counts as a dead file against the fleet budget).
 | `Hero.astro` | lead story: topic tag, headline, standfirst, by-line | `locale`, `story: StoryView` |
 | `ArticleCard.astro` | one story card with a single stretched link | `locale`, `story: StoryView` |
 | `StoryGrid.astro` | responsive grid of `ArticleCard` | `locale`, `stories: StoryView[]` |
-| `NewsletterStrip.astro` | inverted band with the `POST /api/newsletter` form and its status line | `locale` |
+| `NewsletterStrip.astro` | inverted band with the `POST /api/newsletter` form, its `role="status"` line and the consent note; posts JSON with `fetch` and prints the server's translated `message` | `locale` |
 | `AuthorBlock.astro` | home author panel: initials avatar, role, bio, story count | `locale`, `author: AuthorView`, `stories: number` |
 | `TopicList.astro` | topic tiles with icon, name and count | `locale`, `topics: TopicView[]` |
 | `SiteFooter.astro` | legal links, language switcher, disclaimer, copyright, "powered by brotea" | `locale` |
@@ -324,10 +476,30 @@ the next `brotea quality sync` would overwrite it.
 **A new test must live at `src/locales/*.test.mjs`** or nothing runs it. Those
 files execute in bare node (`node --test`), without Vite: read fixtures with
 `fs`, never `import` a `.ts` module that pulls in `import.meta.glob`. That is
-why the seed data sits in `seed.data.json` next to the module that consumes it.
+why the seed data sits in `seed.data.json` next to the module that consumes it,
+and why `src/locales/newsletter.test.mjs` — the newsletter's logic tests — lives
+there too, next to the content and locale gates.
 
-Neither `npm test` nor CI needs a database: without `DATABASE_URL` the app
-serves the seed, which is also how `npm run dev` works locally.
+To test a `.ts` module in bare node, `src/lib/load-ts.mjs` strips its types with
+esbuild (already in `node_modules` as an astro dependency) and imports the result
+as a `data:` URL, since this node may ship without TypeScript support
+(`ERR_NO_TYPESCRIPT`):
+
+```js
+const { normalizeEmail } = await loadTs(new URL('../lib/newsletter/core.ts', import.meta.url));
+```
+
+**It only works for self-contained modules** (no relative imports) — which is
+exactly the constraint that keeps `newsletter/core.ts` free of Postgres and
+SMTP. `newsletter.test.mjs` covers what cannot fail silently: what counts as an
+email, that the stored hash never reveals the token (and that a wrong-length
+hash returns `false` instead of throwing), the 72 h expiry versus the
+never-expiring unsubscribe link, and that the rate limiter limits per key and
+forgets outside its window.
+
+Neither `npm test` nor CI needs a database or an SMTP server: without
+`DATABASE_URL` the app serves the seed, which is also how `npm run dev` works
+locally.
 
 Green `npm test` proves nothing about the runtime — the image is built, run and
 curled by the docker CI job (see [deployment.md](./deployment.md)).
