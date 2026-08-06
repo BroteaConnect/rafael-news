@@ -1,64 +1,63 @@
 import type { APIRoute } from 'astro';
-import { DEFAULT_LOCALE, isLocale, t } from '../../lib/i18n';
+import { MAX_EMAIL, RateLimiter, normalizeEmail } from '../../lib/newsletter/core';
+import { configured as dbConfigured, signup } from '../../lib/newsletter/store';
+import { sendConfirmation } from '../../lib/newsletter/mail';
+import { DEFAULT_LOCALE, isLocale, localePath, t } from '../../lib/i18n';
 
-// Alta al boletín. El navegador habla SOLO con nosotros y es el servidor quien
-// reenvía el correo: así el destino real no viaja en el HTML, no hay CORS que
-// negociar y cambiar de proveedor no obliga a re-desplegar el front.
-//
-// F2 puede sustituir el reenvío por una tabla de suscriptores propia sin tocar
-// ni el componente ni esta URL.
+// Alta al boletín, con doble opt-in. Hasta aquí el correo se reenviaba al
+// recolector de requisitos de la fábrica: funcionaba, pero no era un alta —
+// nadie confirmaba nada y no había forma de darse de baja.
 export const prerender = false;
 
-// `||` y nunca `??`: el ARG del Dockerfile vale "" por defecto, que NO es
-// nullish, así que `??` dejaría el alta apuntando a la cadena vacía en
-// cualquier build que no traiga la variable. El default compilado lo hace
-// imposible y el Dockerfile comprueba que viaja dentro del bundle.
-const ENDPOINT = (import.meta.env.PUBLIC_REQUIREMENTS_ENDPOINT ?? '').trim()
-  || 'https://api.brotea.dev/requirements';
-
-// Validación deliberadamente laxa: aquí solo se descartan los disparates
-// (sin arroba, sin dominio, con espacios). Quién es dueño del buzón lo decide
-// el correo de confirmación, no una expresión regular.
-const LOOKS_LIKE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+// Guardar un correo es barato; ENVIARLO no. Y una lista de correo es un arma si
+// cualquiera puede disparar mil envíos a direcciones ajenas desde un formulario
+// público: se limita por IP y también por dirección.
+const byIp = new RateLimiter(5, 60_000);
+const byEmail = new RateLimiter(3, 3600_000);
 
 const json = (body: unknown, status: number) =>
   new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   });
 
-export const POST: APIRoute = async ({ request }) => {
+export const POST: APIRoute = async ({ request, clientAddress, site }) => {
   const payload = (await request.json().catch(() => null)) as
     { email?: unknown; locale?: unknown } | null;
 
   const locale = isLocale(payload?.locale) ? String(payload?.locale) : DEFAULT_LOCALE;
-  const email = typeof payload?.email === 'string' ? payload.email.trim() : '';
+  const email = normalizeEmail(payload?.email);
+  if (!email) return json({ message: t(locale, 'newsletter.invalid') }, 400);
 
-  if (!LOOKS_LIKE_EMAIL.test(email) || email.length > 200) {
-    return json({ message: t(locale, 'newsletter.invalid') }, 400);
+  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || clientAddress || 'desconocida';
+  if (byIp.limited(ip) || byEmail.limited(email)) {
+    return json({ message: t(locale, 'newsletter.too-many') }, 429);
+  }
+
+  if (!dbConfigured()) {
+    console.error('[boletin] sin DATABASE_URL: no se puede dar de alta a nadie');
+    return json({ message: t(locale, 'newsletter.error') }, 503);
   }
 
   try {
-    const res = await fetch(ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        project: 'rafael-news',
-        source: 'newsletter',
-        submitted_by: email,
-        content: `newsletter subscription (${locale})`,
-      }),
-      // Sin límite de tiempo, una caída del receptor deja la petición del
-      // lector colgada hasta que se aburre y recarga.
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) throw new Error(`upstream ${res.status}`);
+    const { result, token } = await signup(email, locale, 'portada');
+    if (result === 'sent' && token) {
+      const origin = site?.origin ?? new URL(request.url).origin;
+      const url = new URL(localePath(locale, '/boletin/confirmar'), origin);
+      url.searchParams.set('t', token);
+      await sendConfirmation(email, locale, url.href);
+    }
+    // La MISMA respuesta para un alta nueva y para un correo ya confirmado: si
+    // distinguiera, este formulario diría a cualquiera quién está suscrito.
+    // 202 y no 201: aceptamos la petición, pero el suscriptor no existe hasta
+    // que alguien pincha el enlace que solo llega a su buzón.
+    return json({ message: t(locale, 'newsletter.thanks') }, 202);
   } catch (error) {
-    console.error('[newsletter] no se pudo registrar el alta:', error);
-    return json({ message: t(locale, 'newsletter.error') }, 502);
+    console.error('[boletin] fallo al dar de alta:', (error as Error).message);
+    return json({ message: t(locale, 'newsletter.error') }, 500);
   }
-
-  // 202 y no 201: aceptamos el alta, pero quien la confirma es el correo de
-  // doble opt-in, así que todavía no existe un recurso «suscriptor».
-  return json({ message: t(locale, 'newsletter.thanks') }, 202);
 };
+
+// Un GET a esta ruta es casi siempre alguien probando: se responde algo útil
+// en vez de un 404 que parezca que el portal está roto.
+export const GET: APIRoute = () =>
+  json({ message: 'POST {email, locale}', max_email: MAX_EMAIL }, 405);

@@ -1,0 +1,37 @@
+---
+import Layout from '../../../layouts/Layout.astro';
+import { confirm } from '../../../lib/newsletter/store';
+import { localePath, t } from '../../../lib/i18n';
+import { resolveLocale } from '../../../lib/route';
+
+// Es una PÁGINA y no una respuesta JSON: quien pincha desde su correo es una
+// persona con un navegador, y merece el diseño del medio y un camino de vuelta.
+export const prerender = false;
+
+const locale = resolveLocale(Astro.params.lang);
+if (!locale) return Astro.rewrite('/404');
+
+const token = Astro.url.searchParams.get('t') ?? '';
+const result = token ? await confirm(token) : 'unknown';
+
+const KEY = {
+  ok: { title: 'boletin.confirmado.title', body: 'boletin.confirmado.body' },
+  expired: { title: 'boletin.caducado.title', body: 'boletin.caducado.body' },
+  unknown: { title: 'boletin.invalido.title', body: 'boletin.invalido.body' },
+} as const;
+const copy = KEY[result];
+---
+
+<Layout locale={locale} title={t(locale, copy.title)} description={t(locale, copy.body)}>
+  <section class="container aviso measure">
+    <h1>{t(locale, copy.title)}</h1>
+    <p>{t(locale, copy.body)}</p>
+    <a class="btn" href={localePath(locale, '/')}>{t(locale, 'boletin.volver')}</a>
+  </section>
+</Layout>
+
+<style>
+  .aviso { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-4); padding-block: var(--space-6); }
+  h1 { font-size: clamp(1.75rem, 1.2rem + 2.4vw, 2.5rem); }
+  p { margin: 0; color: var(--muted); }
+</style>
