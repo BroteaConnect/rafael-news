@@ -1,0 +1,26 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import TopicList from '../../components/TopicList.astro';
+import { getTopics } from '../../lib/content/seed';
+import { t } from '../../lib/i18n';
+import { resolveLocale } from '../../lib/route';
+
+const locale = resolveLocale(Astro.params.lang);
+if (!locale) return Astro.rewrite('/404');
+
+const topics = await getTopics(locale);
+---
+
+<Layout locale={locale} title={t(locale, 'nav.topics')} description={t(locale, 'topics.description')}>
+  <div class="container intro">
+    <h1>{t(locale, 'nav.topics')}</h1>
+    <p>{t(locale, 'topics.description')}</p>
+  </div>
+  <TopicList locale={locale} topics={topics} />
+</Layout>
+
+<style>
+  .intro { padding-block: var(--space-5) 0; }
+  h1 { font-size: clamp(1.75rem, 1.2rem + 2.4vw, 2.5rem); }
+  p { color: var(--muted); max-width: 60ch; margin-block-start: var(--space-3); }
+</style>

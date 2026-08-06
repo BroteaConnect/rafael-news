@@ -1,0 +1,52 @@
+---
+import type { StoryView } from '../lib/content/types';
+import { formatDate } from '../lib/format';
+import { localePath, t } from '../lib/i18n';
+
+interface Props { locale: string; story: StoryView }
+const { locale, story } = Astro.props;
+const href = localePath(locale, `/noticia/${story.slug}`);
+---
+
+{/* La entradilla se muestra entera aunque la tarjeta enlace: el resumen del día
+    tiene que poder leerse sin entrar en ninguna noticia. */}
+<article class="card">
+  <p class="meta">
+    <span class="tag">{story.topicName}</span>
+    <span class="relevance">· {t(locale, `relevance.${story.relevance}`)}</span>
+  </p>
+  {/* Un solo enlace por tarjeta, estirado sobre toda su superficie: tres
+      enlaces al mismo sitio obligan a quien navega con teclado o con lector de
+      pantalla a pasar por los tres para salir de la tarjeta. */}
+  <h3><a class="stretched" href={href}>{story.title}</a></h3>
+  <p class="standfirst">{story.standfirst}</p>
+  <p class="byline">
+    <time datetime={story.publishedAt}>{formatDate(locale, story.publishedAt)}</time>
+    <span aria-hidden="true">·</span>
+    <span>{t(locale, 'article.reading', { minutes: story.readingMinutes })}</span>
+  </p>
+</article>
+
+<style>
+  .card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    height: 100%;
+    padding: var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .card:hover { box-shadow: var(--shadow); }
+  .meta { margin: 0; }
+  h3 { font-size: 1.25rem; }
+  h3 a { color: var(--text); text-decoration: none; }
+  .card:hover h3 a { color: var(--primary); }
+  .stretched::after { content: ''; position: absolute; inset: 0; }
+  .standfirst { margin: 0; color: var(--muted); font-size: 0.9375rem; }
+  /* La firma cae al fondo de la tarjeta aunque los titulares midan distinto:
+   * en una rejilla de cuatro, las fechas descuadradas se ven al instante. */
+  .byline { margin: 0; margin-block-start: auto; padding-block-start: var(--space-2); font-size: 0.8125rem; }
+</style>

@@ -1,0 +1,97 @@
+---
+import MarketBar from './MarketBar.astro';
+import Search from './Search.astro';
+import { localePath, t } from '../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+const home = localePath(locale, '/');
+
+// Las cuatro entradas del brief. Todas llevan a una página que existe salvo el
+// boletín, que es un ancla de la portada porque la franja vive ahí: un enlace
+// del menú principal que devuelve 404 es el mismo error que un formulario
+// decorativo.
+const NAV = [
+  { href: localePath(locale, '/noticias'), key: 'nav.news' },
+  { href: localePath(locale, '/temas'), key: 'nav.topics' },
+  { href: localePath(locale, '/autor/rafael-ojeda'), key: 'nav.author' },
+  { href: `${home}#newsletter`, key: 'nav.newsletter' },
+];
+---
+
+<header class="site-header">
+  <div class="bar container">
+    <a class="wordmark" href={home}>
+      <!-- El wordmark va en SVG y no en la tipografía de marca: las OTF de PP
+           Neue Machina pesaban 124 KB cada una, y esto son 10 letras. -->
+      <svg width="150" height="20" viewBox="0 0 150 20" role="img" aria-label={t(locale, 'site.name')}>
+        <text class="wm-serif" x="0" y="15">Brotea</text>
+        <text class="wm-sans" x="62" y="15">NEWS</text>
+      </svg>
+    </a>
+
+    <nav aria-label={t(locale, 'a11y.main-nav')}>
+      <ul>
+        {NAV.map((item) => (
+          <li><a href={item.href}>{t(locale, item.key)}</a></li>
+        ))}
+      </ul>
+    </nav>
+
+    <div class="actions">
+      <Search locale={locale} />
+      <a class="btn cta" href={`${home}#newsletter`}>{t(locale, 'cta.subscribe')}</a>
+    </div>
+  </div>
+  <MarketBar locale={locale} />
+</header>
+
+<style>
+  /* Pegada arriba, no `fixed`: `sticky` no saca la cabecera del flujo, así que
+   * no hay que compensar su altura con un padding que se descuadra en cuanto
+   * la barra de mercado cambia de líneas en móvil. */
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--surface);
+    border-block-end: 1px solid var(--border);
+  }
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    min-height: 56px;
+  }
+  .wordmark { color: var(--text); text-decoration: none; display: flex; align-items: center; }
+  .wordmark svg { display: block; }
+  /* `font-family` como ATRIBUTO de SVG no entiende var(): tiene que llegar como
+   * propiedad CSS o el wordmark sale en la tipografía por defecto del navegador. */
+  .wm-serif { font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: 0.02em; fill: currentColor; }
+  .wm-sans { font-family: var(--font-sans); font-size: 17px; font-weight: 700; letter-spacing: 0.08em; fill: var(--primary); }
+
+  /* Móvil: la navegación se va debajo y rueda en horizontal. Un menú
+   * hamburguesa costaría JavaScript para cuatro enlaces. */
+  nav { order: 3; flex-basis: 100%; overflow-x: auto; }
+  nav ul {
+    display: flex;
+    gap: var(--space-4);
+    list-style: none;
+    margin: 0;
+    padding: 0 0 var(--space-2);
+    white-space: nowrap;
+  }
+  nav a { color: var(--text); text-decoration: none; font-size: 0.9375rem; font-weight: 500; }
+  nav a:hover { color: var(--primary); }
+
+  .actions { display: flex; align-items: center; gap: var(--space-2); margin-inline-start: auto; }
+  /* En móvil el CTA se llevaría media barra; la franja del boletín sigue ahí. */
+  .cta { display: none; }
+
+  @media (min-width: 900px) {
+    .bar { min-height: 64px; }
+    nav { order: 0; flex-basis: auto; overflow: visible; }
+    nav ul { padding-block-end: 0; }
+    .cta { display: inline-flex; }
+  }
+</style>

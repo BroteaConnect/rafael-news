@@ -1,0 +1,55 @@
+---
+import Layout from '../../../layouts/Layout.astro';
+import StoryGrid from '../../../components/StoryGrid.astro';
+import { getAuthorBySlug, getStoriesByAuthor } from '../../../lib/content/seed';
+import { t } from '../../../lib/i18n';
+import { resolveLocale } from '../../../lib/route';
+
+const locale = resolveLocale(Astro.params.lang);
+if (!locale) return Astro.rewrite('/404');
+
+const author = await getAuthorBySlug(String(Astro.params.slug ?? ''), locale);
+if (!author) return Astro.rewrite('/404');
+
+const stories = await getStoriesByAuthor(author.id, locale);
+---
+
+<Layout locale={locale} title={author.name} description={author.bio}>
+  <header class="container who">
+    {/* Avatar tipográfico mientras no haya retrato real: una foto de archivo de
+        un señor con corbata sería mentir sobre quién firma. */}
+    <p class="portrait" aria-label={t(locale, 'a11y.author-photo', { name: author.name })}>
+      <span aria-hidden="true">{author.initials}</span>
+    </p>
+    <div>
+      <h1>{author.name}</h1>
+      <p class="role">{author.role}</p>
+      <p class="bio measure">{author.bio}</p>
+    </div>
+  </header>
+
+  <section class="section container" aria-labelledby="author-stories">
+    <h2 class="section-title" id="author-stories">{t(locale, 'author.stories')}</h2>
+    <StoryGrid locale={locale} stories={stories} />
+  </section>
+</Layout>
+
+<style>
+  .who { display: flex; gap: var(--space-4); align-items: flex-start; padding-block: var(--space-5); }
+  .portrait {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 112px; height: 112px;
+    margin: 0;
+    border-radius: var(--radius-lg);
+    background: var(--primary);
+    color: var(--primary-contrast);
+    font-family: var(--font-display);
+    font-size: 2.25rem;
+    font-weight: 600;
+  }
+  h1 { font-size: clamp(1.75rem, 1.2rem + 2.4vw, 2.5rem); }
+  .role { margin: var(--space-1) 0 var(--space-3); color: var(--primary); font-weight: 600; font-size: 0.9375rem; }
+  .bio { margin: 0; color: var(--muted); }
+</style>

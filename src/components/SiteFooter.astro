@@ -1,0 +1,62 @@
+---
+import LanguageSwitcher from './LanguageSwitcher.astro';
+import { localePath, t } from '../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+const p = (path: string) => localePath(locale, path);
+---
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="cols">
+      {/* Ni redes ni canal: los perfiles reales de Rafael todavía no están
+          confirmados en el proyecto y un enlace inventado a una red social es
+          un 404 firmado con su nombre. Entran cuando lleguen las URLs. */}
+      <nav aria-label={t(locale, 'a11y.legal-nav')}>
+        <h2>{t(locale, 'footer.legal')}</h2>
+        <ul>
+          <li><a href={p('/legal')}>{t(locale, 'footer.notice')}</a></li>
+          <li><a href={`${p('/legal')}#privacidad`}>{t(locale, 'footer.privacy')}</a></li>
+        </ul>
+      </nav>
+      <div class="lang">
+        <h2>{t(locale, 'nav.language')}</h2>
+        <LanguageSwitcher locale={locale} />
+      </div>
+    </div>
+
+    {/* El descargo va con el color de texto normal, no en gris apagado: es lo
+        único de esta página con consecuencias legales para quien lee. */}
+    <p class="disclaimer">{t(locale, 'footer.disclaimer')}</p>
+    <p class="copyright">
+      <span>{t(locale, 'footer.copyright', { year: new Date().getUTCFullYear() })}</span>
+      <span aria-hidden="true">·</span>
+      <a href="https://brotea.dev" rel="noopener" target="_blank">{t(locale, 'footer.powered')}</a>
+    </p>
+  </div>
+</footer>
+
+<style>
+  .site-footer {
+    margin-block-start: var(--space-6);
+    padding-block: var(--space-6);
+    background: var(--surface);
+    border-block-start: 1px solid var(--border);
+  }
+  .cols { display: grid; gap: var(--space-5); grid-template-columns: 1fr; }
+  h2 { font-family: var(--font-sans); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-block-end: var(--space-2); }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+  a { color: var(--text); text-decoration: none; }
+  a:hover { color: var(--primary); text-decoration: underline; }
+  .disclaimer {
+    margin-block: var(--space-5) var(--space-2);
+    padding-block-start: var(--space-4);
+    border-block-start: 1px solid var(--border);
+    color: var(--text);
+    font-size: 0.875rem;
+    max-width: 80ch;
+  }
+  .copyright { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0; color: var(--muted); font-size: 0.8125rem; }
+  @media (min-width: 700px) { .cols { grid-template-columns: repeat(2, 1fr); } }
+</style>

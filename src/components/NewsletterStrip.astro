@@ -1,0 +1,103 @@
+---
+import { t } from '../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+---
+
+{/* `.invert` le da a la franja el vocabulario ENTERO del modo contrario, así
+    que dentro se estila con los tokens de siempre y todo —botón incluido— sale
+    con el contraste correcto sobre el fondo oscuro sin un solo color a mano. */}
+<section id="newsletter" class="band invert" aria-labelledby="newsletter-title">
+  <div class="container inner">
+    <div class="pitch">
+      <h2 id="newsletter-title">{t(locale, 'newsletter.title')}</h2>
+      <p>{t(locale, 'newsletter.pitch')}</p>
+    </div>
+
+    {/* El alta va contra nuestro propio servidor (/api/newsletter), que reenvía
+        el correo desde el servidor. No hay endpoint que configurar ni variable
+        que se pueda olvidar: un formulario que solo funciona si alguien acordó
+        poner una variable acaba siendo un formulario muerto en producción. */}
+    <form
+      id="newsletter-form"
+      method="post"
+      action="/api/newsletter"
+      data-locale={locale}
+      data-msg-sending={t(locale, 'newsletter.sending')}
+      data-msg-thanks={t(locale, 'newsletter.thanks')}
+      data-msg-error={t(locale, 'newsletter.error')}
+    >
+      <label class="visually-hidden" for="newsletter-email">{t(locale, 'newsletter.email')}</label>
+      <input
+        id="newsletter-email"
+        type="email"
+        name="email"
+        required
+        maxlength="200"
+        autocomplete="email"
+        placeholder={t(locale, 'newsletter.placeholder')}
+      />
+      <button class="btn" type="submit">{t(locale, 'cta.subscribe')}</button>
+      {/* El aviso existe en el HTML desde el principio, vacío: crearlo con JS lo
+          dejaría fuera del alcance de este <style> (los estilos con ámbito no
+          alcanzan los nodos creados con createElement) y `role="status"` solo
+          anuncia lo que CAMBIA dentro de un nodo que ya estaba. */}
+      <p id="newsletter-status" role="status" class="status"></p>
+      <p class="consent">{t(locale, 'newsletter.consent')}</p>
+    </form>
+  </div>
+</section>
+
+<script>
+  const form = document.getElementById('newsletter-form') as HTMLFormElement | null;
+  const status = document.getElementById('newsletter-status');
+  form?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!status) return;
+    status.textContent = form.dataset.msgSending ?? '';
+    try {
+      const data = new FormData(form);
+      const res = await fetch(form.action, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: data.get('email'), locale: form.dataset.locale }),
+      });
+      // El servidor manda el mensaje ya traducido (sabe el idioma y sabe qué ha
+      // fallado); el del cliente solo entra si no hubo respuesta que leer.
+      const body = (await res.json().catch(() => null)) as { message?: string } | null;
+      status.textContent = body?.message
+        ?? (res.ok ? form.dataset.msgThanks : form.dataset.msgError)
+        ?? '';
+      if (res.ok) form.reset();
+    } catch {
+      status.textContent = form.dataset.msgError ?? '';
+    }
+  });
+</script>
+
+<style>
+  .band { background: var(--bg); color: var(--text); }
+  .inner { display: grid; gap: var(--space-4); padding-block: var(--space-6); }
+  h2 { font-size: clamp(1.5rem, 1.2rem + 1.4vw, 2rem); margin-block-end: var(--space-2); }
+  .pitch p { margin: 0; color: var(--muted); max-width: 48ch; }
+
+  form { display: grid; grid-template-columns: 1fr; gap: var(--space-2); align-content: start; }
+  input {
+    min-height: 44px;
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .status { margin: 0; min-height: 1.5em; font-size: 0.9375rem; }
+  .consent { margin: 0; color: var(--muted); font-size: 0.8125rem; }
+
+  @media (min-width: 900px) {
+    .inner { grid-template-columns: 1fr 1fr; align-items: center; gap: var(--space-6); }
+    form { grid-template-columns: 1fr auto; }
+    .status, .consent { grid-column: 1 / -1; }
+  }
+</style>

@@ -1,0 +1,64 @@
+---
+import '../styles/theme.css';
+import '../styles/base.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import { DEFAULT_LOCALE, alternates, dirOf, localePath, stripLocale, t } from '../lib/i18n';
+
+interface Props { title: string; description: string; locale?: string }
+const { title, description, locale = DEFAULT_LOCALE } = Astro.props;
+
+const path = stripLocale(Astro.url.pathname);
+const abs = (href: string) => (Astro.site ? new URL(href, Astro.site).href : href);
+const siteName = t(locale, 'site.name');
+// El titular de la página va delante: en una pestaña entre veinte, lo que
+// distingue es la noticia, no la cabecera del medio.
+const fullTitle = title === siteName ? title : `${title} · ${siteName}`;
+---
+
+<!doctype html>
+<html lang={locale} dir={dirOf(locale)}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={abs(Astro.url.pathname)} />
+    <meta name="color-scheme" content="light dark" />
+
+    <!-- La serif de titulares entra en la ruta crítica: es el texto del hero,
+         que casi siempre es el elemento LCP. La sans del cuerpo no se precarga
+         a propósito, para no competir con ella por el ancho de banda. -->
+    <link rel="preload" href="/fonts/Newsreader-600-latin.woff2" as="font" type="font/woff2" crossorigin />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={siteName} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={abs(Astro.url.pathname)} />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    {alternates(path).map((a) => (
+      <link rel="alternate" hreflang={a.hreflang} href={abs(a.href)} />
+    ))}
+    <link rel="alternate" hreflang="x-default" href={abs(localePath(DEFAULT_LOCALE, path))} />
+    <!-- brotea:head -->
+    <script is:inline defer src={import.meta.env.PUBLIC_UMAMI_SRC} data-website-id={import.meta.env.PUBLIC_UMAMI_WEBSITE_ID}></script>
+    <script is:inline defer id="brotea-errors" src="/brotea-errors.js" data-dsn={import.meta.env.PUBLIC_GLITCHTIP_DSN}></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">{t(locale, 'a11y.skip')}</a>
+    <SiteHeader locale={locale} />
+    <main id="main" tabindex="-1">
+      <slot />
+    </main>
+    <SiteFooter locale={locale} />
+  </body>
+</html>
+
+<style>
+  main { display: block; }
+  /* Sin contorno al enfocar <main> por el enlace de salto: el foco va ahí para
+   * que el lector de pantalla siga leyendo, no para señalar un control. */
+  main:focus { outline: none; }
+</style>

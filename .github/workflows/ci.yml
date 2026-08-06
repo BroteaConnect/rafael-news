@@ -32,8 +32,33 @@ jobs:
       - uses: actions/checkout@v4
       - name: Construir la imagen real
         run: docker build -t ci-check:${{ github.sha }} .
-      - name: La imagen sirve el sitio construido
+      # Que exista un fichero dentro de la imagen no prueba que la imagen
+      # SIRVA. Y `test -f /usr/share/nginx/html/index.html` además daba por
+      # hecho un runtime: nginx sirviendo estáticos. Cualquier app con
+      # servidor propio (SSR, API) suspendía un gate GENERADO que el repo
+      # tiene prohibido editar. Ahora el gate arranca la imagen y le habla:
+      # vale para las dos formas y comprueba lo que de verdad importa.
+      - name: La imagen sirve de verdad
         run: |
-          docker run --rm ci-check:${{ github.sha }} \
-            sh -c 'test -f /usr/share/nginx/html/index.html' \
-            || { echo "::error::la imagen no contiene index.html"; exit 1; }
+          # Contrato de servicio, en brotea.json. Por omisión, el estático de
+          # siempre: nginx en el 80 y la raíz. Así el chequeo es el mismo para
+          # toda la flota y un runtime distinto es un DATO, no otro workflow.
+          port=$(jq -r '.runtime.port // 80' brotea.json)
+          health=$(jq -r '.runtime.health // "/"' brotea.json)
+          # Puerto efímero, no uno fijo: un 8080 ocupado en el runner haría
+          # fallar el gate por una colisión que no tiene nada que ver con la app.
+          docker run -d --name ci-app -p 127.0.0.1::"$port" ci-check:${{ github.sha }}
+          addr=$(docker port ci-app "$port"/tcp | head -1)
+          for _ in $(seq 1 30); do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' "http://$addr$health" || true)
+            [ "$code" = "200" ] && ok=1 && break
+            sleep 1
+          done
+          # Los logs SIEMPRE: un contenedor que muere al arrancar sin logs
+          # deja el fallo sin diagnóstico y obliga a reproducir en local.
+          echo "--- docker logs ---"; docker logs ci-app 2>&1 | tail -50
+          docker rm -f ci-app >/dev/null 2>&1 || true
+          [ "${ok:-}" = "1" ] || {
+            echo "::error::la imagen no sirve 200 en $health (puerto $port, último código: ${code:-sin respuesta})"
+            exit 1
+          }

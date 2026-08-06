@@ -1,123 +1,52 @@
 ---
-import LanguageSwitcher from '../../components/LanguageSwitcher.astro';
-import { alternates, dirOf, localePath, localePaths, stripLocale, t } from '../../lib/i18n';
+import Layout from '../../layouts/Layout.astro';
+import Hero from '../../components/Hero.astro';
+import ArticleCard from '../../components/ArticleCard.astro';
+import NewsletterStrip from '../../components/NewsletterStrip.astro';
+import AuthorBlock from '../../components/AuthorBlock.astro';
+import TopicList from '../../components/TopicList.astro';
+import { getArticles, getAuthor, getLeadStory, getTopics } from '../../lib/content/seed';
+import { resolveLocale } from '../../lib/route';
+import { t } from '../../lib/i18n';
 
-// One file, every language: / (default locale) and /<code>/ for the rest.
-export const getStaticPaths = localePaths;
-const { locale } = Astro.props;
-const i18nPath = stripLocale(Astro.url.pathname);
-const abs = (href: string) => (Astro.site ? new URL(href, Astro.site).href : href);
-import '../../styles/theme.css';
-const PROJECT_NAME = 'Rafael Ojeda News';
-const PROJECT_SLUG = 'rafael-news';
-const PROJECT_DESCRIPTION = 'Personal brand and news hub for Rafael Ojeda, featuring his YouTube videos.';
-// Endpoint that receives requirement submissions (Brotea bot/orchestrator).
-// `||`, nunca `??`: el ARG del Dockerfile vale "" por defecto, que NO es
-// nullish, así que `??` dejaba el formulario muerto en cualquier build sin
-// la variable de Coolify. El default compilado lo hace imposible.
-const ENDPOINT = import.meta.env.PUBLIC_REQUIREMENTS_ENDPOINT?.trim() || 'https://api.brotea.dev/requirements';
+// En salida de servidor no hay `getStaticPaths`: el idioma sale de la URL, y
+// con él la obligación de rechazar lo que no es un idioma.
+const locale = resolveLocale(Astro.params.lang);
+if (!locale) return Astro.rewrite('/404');
+
+const lead = await getLeadStory(locale);
+const stories = (await getArticles(locale)).filter((story) => story.id !== lead.id);
+const topics = await getTopics(locale);
+const author = await getAuthor(locale);
+const published = stories.length + 1;
 ---
 
-<html lang={locale} dir={dirOf(locale)}>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{PROJECT_NAME}</title>
-    <meta name="description" content={t(locale, 'hero.tagline')} />
-    {alternates(i18nPath).map((a) => (
-      <link rel="alternate" hreflang={a.hreflang} href={abs(a.href)} />
-    ))}
-    <link rel="alternate" hreflang="x-default" href={abs(localePath(locale, i18nPath))} />
-    <!-- brotea:head -->
-    <script is:inline defer src={import.meta.env.PUBLIC_UMAMI_SRC} data-website-id={import.meta.env.PUBLIC_UMAMI_WEBSITE_ID}></script>
-      <script is:inline defer id="brotea-errors" src="/brotea-errors.js" data-dsn={import.meta.env.PUBLIC_GLITCHTIP_DSN}></script>
-  </head>
-  <body>
-    <header class="lang-bar"><LanguageSwitcher locale={locale} /></header>
-    <main>
-      <section class="hero">
-        <h1>{PROJECT_NAME}</h1>
-        <p>{t(locale, 'hero.tagline')}</p>
-      </section>
+<Layout locale={locale} title={t(locale, 'site.name')} description={t(locale, 'site.promise')}>
+  <Hero locale={locale} story={lead} />
 
-      <section class="form-card">
-        <h2>{t(locale, 'form.title')}</h2>
-        <p>{t(locale, 'form.subtitle')}</p>
-        <form
-          id="requirements-form"
-          data-endpoint={ENDPOINT}
-          data-project={PROJECT_SLUG}
-          data-msg-disabled={t(locale, 'form.disabled')}
-          data-msg-sending={t(locale, 'form.sending')}
-          data-msg-thanks={t(locale, 'form.thanks')}
-          data-msg-error={t(locale, 'form.error')}
-        >
-          <label>
-            {t(locale, 'form.name')}
-            <input type="text" name="name" required maxlength="120" />
-          </label>
-          <label>
-            {t(locale, 'form.email')}
-            <input type="email" name="email" required maxlength="200" />
-          </label>
-          <label>
-            {t(locale, 'form.message')}
-            <textarea name="content" required rows="5" maxlength="4000"></textarea>
-          </label>
-          <button type="submit">{t(locale, 'form.submit')}</button>
-          <p id="form-status" role="status"></p>
-        </form>
-      </section>
-    </main>
+  <section id="hoy" class="section container" aria-labelledby="today-title">
+    <h2 class="section-title" id="today-title">{t(locale, 'home.today')}</h2>
+    <ul class="cards">
+      {stories.map((story) => (
+        <li><ArticleCard locale={locale} story={story} /></li>
+      ))}
+    </ul>
+  </section>
 
-    <script>
-      // tipado explícito: getElementById devuelve HTMLElement, y sin esto
-      // `form.reset()` y `new FormData(form)` no compilan (astro check)
-      const form = document.getElementById('requirements-form') as HTMLFormElement;
-      const status = document.getElementById('form-status');
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const endpoint = form.dataset.endpoint;
-        if (!endpoint) {
-          status.textContent = form.dataset.msgDisabled;
-          return;
-        }
-        const data = Object.fromEntries(new FormData(form));
-        status.textContent = form.dataset.msgSending;
-        try {
-          const res = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              project: form.dataset.project,
-              source: 'landing_form',
-              submitted_by: `${data.name} <${data.email}>`,
-              content: data.content,
-            }),
-          });
-          if (!res.ok) throw new Error(String(res.status));
-          form.reset();
-          status.textContent = form.dataset.msgThanks;
-        } catch {
-          status.textContent = form.dataset.msgError;
-        }
-      });
-    </script>
+  <NewsletterStrip locale={locale} />
+  <AuthorBlock locale={locale} author={author} stories={published} />
+  <TopicList locale={locale} topics={topics} />
+</Layout>
 
-    <style>
-      .lang-bar { max-width: var(--container); margin: 0 auto;
-                  padding: var(--space-4) var(--space-4) 0; display: flex; justify-content: flex-end; }
-      * { box-sizing: border-box; }
-      body { margin: 0; font-family: var(--font-sans); color: var(--text); background: var(--bg); }
-      main { max-width: var(--container); margin: 0 auto; padding: 4rem 1.5rem; }
-      .hero h1 { font-size: 2.5rem; margin: 0 0 .5rem; }
-      .hero p { font-size: 1.15rem; color: var(--muted); }
-      .form-card { margin-top: 3rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 2rem; }
-      label { display: block; margin-bottom: 1rem; font-weight: 600; }
-      input, textarea { display: block; width: 100%; margin-top: .35rem; padding: .6rem; border: 1px solid var(--border); border-radius: var(--radius); font: inherit; }
-      button { padding: .7rem 1.6rem; border: 0; border-radius: var(--radius); background: var(--primary); color: var(--primary-contrast); font: inherit; font-weight: 600; cursor: pointer; }
-      button:hover { filter: brightness(0.92); }
-      #form-status { min-height: 1.2em; color: var(--muted); }
-    </style>
-  </body>
-</html>
+<style>
+  .cards {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: var(--space-4);
+    /* Una columna, dos o cuatro según el ancho disponible: lo decide la
+     * rejilla, no una escalera de puntos de ruptura por dispositivo. */
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  }
+</style>

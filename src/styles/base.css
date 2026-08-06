@@ -1,0 +1,131 @@
+/* Estilos base del portal. Todo se tematiza contra los tokens de theme.css
+ * (docs/theme-contract.md): aquí no hay ni un color ni una fuente literal. */
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  /* 17px en móvil, 18 a partir de tableta. El mínimo del brief es 16 y el
+   * cuerpo de un portal de lectura larga agradece pasarlo. */
+  font-size: 17px;
+  line-height: 1.6;
+}
+@media (min-width: 768px) { body { font-size: 18px; } }
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.15;
+  margin: 0;
+  /* los titulares serif con guiones parten mejor en móvil */
+  text-wrap: balance;
+}
+
+a { color: var(--primary); }
+a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: calc(var(--radius) / 2);
+}
+
+img { max-width: 100%; height: auto; display: block; }
+
+/* El ancho del portal y el ancho de lectura son dos cosas distintas: 1200 para
+ * la rejilla, 68ch para la prosa. Los dos son tokens. */
+.container {
+  width: 100%;
+  max-width: var(--container);
+  margin-inline: auto;
+  padding-inline: var(--space-4);
+}
+.measure { max-width: var(--measure); }
+
+/* Enlace de salto: existe siempre, se ve solo con el teclado. */
+.skip {
+  position: absolute;
+  inset-inline-start: var(--space-3);
+  inset-block-start: calc(var(--space-3) * -10);
+  z-index: 100;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: inset-block-start 120ms ease;
+}
+.skip:focus { inset-block-start: var(--space-3); }
+
+.section { padding-block: var(--space-6); }
+.section-title {
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-block-end: var(--space-4);
+  padding-block-end: var(--space-2);
+  border-block-end: 1px solid var(--border);
+}
+
+/* Botón primario. Un solo sitio: el CTA de suscripción sale igual en la
+ * cabecera y dentro de la franja invertida, porque los dos usan los tokens
+ * de su propio contexto. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  /* 44px de alto mínimo: es el objetivo táctil que pide WCAG 2.5.5 */
+  min-height: 44px;
+  padding: var(--space-2) var(--space-4);
+  background: var(--primary);
+  color: var(--primary-contrast);
+  font: inherit;
+  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn-ghost { background: transparent; color: var(--text); border-color: var(--border); }
+
+.tag {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+/* La relevancia se distingue por PALABRA, no por color: cuatro colores
+ * inventados romperían la paleta y dejarían el dato fuera del alcance de
+ * quien no distingue tonos. */
+.relevance { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.byline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+.byline img { border-radius: 50%; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

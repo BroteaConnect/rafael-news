@@ -1,0 +1,174 @@
+{
+  "_comment": "Semilla editorial de F1: la portada de un día. F2 la sustituye por filas de Postgres y este fichero desaparece; por eso la forma es exactamente la de las tablas (ver types.ts) y no un montón de claves de i18n. Se valida en src/locales/content.test.mjs.",
+  "authors": [
+    {
+      "id": "aut-rafael-ojeda",
+      "slug": "rafael-ojeda",
+      "name": "Rafael Ojeda",
+      "role": {
+        "es": "Analista macro y director de estrategia",
+        "en": "Macro analyst and head of strategy"
+      },
+      "bio": {
+        "es": "Lleva más de dos décadas leyendo mercados en mesa y explicándolos en abierto. Aquí publica cada mañana lo que de verdad mueve las carteras: tipos, materias primas y el ruido que conviene ignorar.",
+        "en": "Two decades of reading markets from the trading desk and explaining them in public. Every morning he publishes what actually moves portfolios: rates, commodities and the noise worth ignoring."
+      }
+    }
+  ],
+  "topics": [
+    {
+      "id": "macro",
+      "slug": "macro",
+      "name": { "es": "Macro", "en": "Macro" }
+    },
+    {
+      "id": "markets",
+      "slug": "mercados",
+      "name": { "es": "Mercados", "en": "Markets" }
+    },
+    {
+      "id": "crypto",
+      "slug": "cripto",
+      "name": { "es": "Cripto", "en": "Crypto" }
+    },
+    {
+      "id": "fx",
+      "slug": "divisas",
+      "name": { "es": "Divisas", "en": "Currencies" }
+    }
+  ],
+  "stories": [
+    {
+      "id": "sto-bce-septiembre",
+      "slug": "bce-tipos-septiembre",
+      "topicId": "macro",
+      "authorId": "aut-rafael-ojeda",
+      "relevance": "high",
+      "publishedAt": "2026-08-06T06:30:00Z",
+      "readingMinutes": 4,
+      "lead": true,
+      "title": {
+        "es": "El BCE llega a septiembre sin margen para equivocarse",
+        "en": "The ECB reaches September with no room for error"
+      },
+      "standfirst": {
+        "es": "La inflación de servicios sigue pegada al 3% y el mercado ya descuenta una bajada que los datos todavía no justifican. Quien pague hoy esa expectativa asume el riesgo entero.",
+        "en": "Services inflation is still stuck near 3% and the market is already pricing a cut the data does not yet justify. Whoever pays for that expectation today takes the whole risk."
+      }
+    },
+    {
+      "id": "sto-ibex-bancos",
+      "slug": "ibex-bancos-resultados",
+      "topicId": "markets",
+      "authorId": "aut-rafael-ojeda",
+      "relevance": "medium",
+      "publishedAt": "2026-08-06T07:10:00Z",
+      "readingMinutes": 3,
+      "lead": false,
+      "title": {
+        "es": "La banca sostiene el Ibex, pero ya no por el margen",
+        "en": "Banks are holding up the Ibex, but no longer on margins"
+      },
+      "standfirst": {
+        "es": "Los resultados del semestre confirman el giro: menos ingreso por tipos y más por comisiones. Es un beneficio de peor calidad y el mercado lo está pagando igual.",
+        "en": "Half-year results confirm the shift: less income from rates, more from fees. That is lower-quality profit, and the market is paying the same for it."
+      }
+    },
+    {
+      "id": "sto-bitcoin-etf",
+      "slug": "bitcoin-etf-flujos",
+      "topicId": "crypto",
+      "authorId": "aut-rafael-ojeda",
+      "relevance": "high",
+      "publishedAt": "2026-08-06T07:40:00Z",
+      "readingMinutes": 5,
+      "lead": false,
+      "title": {
+        "es": "Los ETF de bitcoin llevan tres semanas vendiendo",
+        "en": "Bitcoin ETFs have been selling for three weeks"
+      },
+      "standfirst": {
+        "es": "La salida es ordenada y no parece pánico, pero rompe el relato del comprador institucional permanente que sostuvo el precio todo el año.",
+        "en": "The outflow is orderly and looks nothing like panic, yet it breaks the story of the permanent institutional buyer that held the price up all year."
+      }
+    },
+    {
+      "id": "sto-euro-dolar",
+      "slug": "euro-dolar-rango",
+      "topicId": "fx",
+      "authorId": "aut-rafael-ojeda",
+      "relevance": "medium",
+      "publishedAt": "2026-08-06T08:05:00Z",
+      "readingMinutes": 2,
+      "lead": false,
+      "title": {
+        "es": "El euro-dólar lleva seis semanas en el mismo rango",
+        "en": "The euro-dollar has spent six weeks in the same range"
+      },
+      "standfirst": {
+        "es": "Un cruce quieto no es un cruce tranquilo: la volatilidad implícita se ha hundido y eso abarata cubrirse justo antes de las reuniones de septiembre.",
+        "en": "A still pair is not a calm pair: implied volatility has collapsed, which makes hedging cheap right before the September meetings."
+      }
+    },
+    {
+      "id": "sto-empleo-eeuu",
+      "slug": "empleo-eeuu-lectura",
+      "topicId": "macro",
+      "authorId": "aut-rafael-ojeda",
+      "relevance": "low",
+      "publishedAt": "2026-08-05T15:20:00Z",
+      "readingMinutes": 4,
+      "lead": false,
+      "title": {
+        "es": "El empleo de EE. UU. se enfría por donde importa",
+        "en": "US employment is cooling exactly where it matters"
+      },
+      "standfirst": {
+        "es": "El titular sale fuerte otra vez, pero las revisiones a la baja y las horas trabajadas cuentan otra película. La segunda cifra siempre manda sobre la primera.",
+        "en": "The headline reads strong again, but downward revisions and hours worked tell a different story. The second print always beats the first."
+      }
+    }
+  ],
+  "market": {
+    "asOf": "2026-08-06T09:15:00Z",
+    "delayMinutes": 15,
+    "sample": true,
+    "quotes": [
+      {
+        "id": "ibex",
+        "name": { "es": "Ibex 35", "en": "Ibex 35" },
+        "value": 11240.3,
+        "decimals": 1,
+        "changePct": 0.42
+      },
+      {
+        "id": "sp500",
+        "name": { "es": "S&P 500", "en": "S&P 500" },
+        "value": 5310.8,
+        "decimals": 1,
+        "changePct": -0.18
+      },
+      {
+        "id": "eurusd",
+        "name": { "es": "Euro-dólar", "en": "Euro-dollar" },
+        "value": 1.0842,
+        "decimals": 4,
+        "changePct": 0.05
+      },
+      {
+        "id": "gold",
+        "name": { "es": "Oro", "en": "Gold" },
+        "value": 2412.5,
+        "decimals": 1,
+        "changePct": 0.31
+      },
+      {
+        "id": "btc",
+        "name": { "es": "Bitcoin", "en": "Bitcoin" },
+        "value": 61480,
+        "decimals": 0,
+        "changePct": -1.24
+      }
+    ]
+  }
+}
