@@ -1,0 +1,113 @@
+---
+import { localePath, t } from '../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+// El índice se pide al ABRIR, no al cargar la página: quien nunca abre el
+// buscador no paga ni un byte por él. Con 3-5 noticias al día el índice entero
+// es una respuesta diminuta y el filtrado ocurre en el cliente.
+const indexUrl = localePath(locale, '/search-index.json');
+const base = localePath(locale, '/noticia/');
+---
+
+<button id="search-open" class="btn btn-ghost" aria-haspopup="dialog">
+  <span aria-hidden="true">⌕</span>
+  <span class="label">{t(locale, 'search.open')}</span>
+</button>
+
+<dialog id="search-dialog" aria-label={t(locale, 'search.title')}>
+  <form method="dialog" class="head">
+    <label class="visually-hidden" for="search-input">{t(locale, 'search.label')}</label>
+    <input id="search-input" type="search" autocomplete="off" placeholder={t(locale, 'search.placeholder')} />
+    <button class="btn btn-ghost" value="close">{t(locale, 'search.close')}</button>
+  </form>
+  <p id="search-empty" class="empty" hidden>{t(locale, 'search.empty')}</p>
+  <ul id="search-results" class="results" data-index={indexUrl} data-base={base}></ul>
+</dialog>
+
+<script>
+  interface Hit { slug: string; title: string; standfirst: string; topic: string }
+
+  const openBtn = document.getElementById('search-open');
+  const dialog = document.getElementById('search-dialog') as HTMLDialogElement | null;
+  const input = document.getElementById('search-input') as HTMLInputElement | null;
+  const list = document.getElementById('search-results');
+  const empty = document.getElementById('search-empty');
+  let index: Hit[] | null = null;
+
+  // Sin tildes a los dos lados: en español, buscar «analisis» tiene que
+  // encontrar «análisis» o el buscador parece roto.
+  const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  async function load() {
+    if (index || !list?.dataset.index) return;
+    try {
+      index = (await (await fetch(list.dataset.index)).json()) as Hit[];
+    } catch {
+      // Un índice que no carga deja el buscador vacío, no la página rota.
+      index = [];
+    }
+  }
+
+  function render(query: string) {
+    if (!list || !empty) return;
+    const q = norm(query.trim());
+    const hits = (index ?? []).filter((h) => !q || norm(`${h.title} ${h.standfirst} ${h.topic}`).includes(q));
+    const base = list.dataset.base ?? '/noticia/';
+    list.replaceChildren(...hits.map((h) => {
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.href = base + h.slug;
+      a.textContent = h.title;
+      const topic = document.createElement('span');
+      topic.textContent = h.topic;
+      li.append(a, topic);
+      return li;
+    }));
+    empty.hidden = hits.length > 0;
+  }
+
+  openBtn?.addEventListener('click', async () => {
+    dialog?.showModal();
+    await load();
+    render(input?.value ?? '');
+    input?.focus();
+  });
+  input?.addEventListener('input', () => render(input.value));
+</script>
+
+<style>
+  .label { display: none; }
+  @media (min-width: 900px) { .label { display: inline; } }
+
+  dialog {
+    width: min(640px, calc(100vw - 2 * var(--space-4)));
+    padding: var(--space-4);
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+  }
+  dialog::backdrop { background: rgb(0 0 0 / 0.4); }
+  .head { display: flex; gap: var(--space-2); }
+  .head input {
+    flex: 1;
+    min-height: 44px;
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .empty { color: var(--muted); }
+
+  /* Los resultados los crea JavaScript, así que NO llevan el atributo de ámbito
+   * que Astro pone a los elementos de la plantilla: sin :global() estas reglas
+   * no casarían con nada y la lista saldría sin estilo. */
+  .results { list-style: none; margin: var(--space-3) 0 0; padding: 0; display: grid; gap: var(--space-2); max-height: 50vh; overflow-y: auto; }
+  .results :global(li) { display: grid; gap: var(--space-1); padding-block-end: var(--space-2); border-block-end: 1px solid var(--border); }
+  .results :global(a) { color: var(--text); text-decoration: none; font-family: var(--font-display); font-size: 1.0625rem; }
+  .results :global(a:hover) { color: var(--primary); }
+  .results :global(span) { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; }
+</style>

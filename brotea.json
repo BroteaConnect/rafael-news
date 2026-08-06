@@ -17,11 +17,11 @@
     }
   },
   "theme": {
-    "name": "brotea",
-    "version": "2.0.0"
+    "name": "brotea-news",
+    "version": "1.0.0"
   },
   "i18n": {
-    "defaultLocale": "en",
+    "defaultLocale": "es",
     "locales": [
       "en",
       "es"
@@ -30,9 +30,25 @@
       "en",
       "es"
     ],
+    "native": {
+      "en": "English",
+      "es": "Español"
+    },
+    "dir": {
+      "en": "ltr",
+      "es": "ltr"
+    },
+    "intl": {
+      "en": "en-GB",
+      "es": "es-ES"
+    },
     "runtime": "1.0.0"
   },
   "quality": {
-    "version": "1.1.0"
+    "version": "1.2.0"
+  },
+  "runtime": {
+    "port": 4321,
+    "health": "/healthz"
   }
 }

@@ -1,0 +1,27 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { DEFAULT_LOCALE, localePath, t } from '../lib/i18n';
+
+// Página estática: gana en prioridad de rutas al comodín `[...lang]`, que si no
+// se la quedaría también. Las páginas hacen `Astro.rewrite('/404')` y el estado
+// lo pone esta página, no la que reescribe.
+//
+// Se sirve en el idioma por defecto: si la URL no es un idioma válido, no hay
+// forma honesta de saber en qué idioma habla quien la ha pedido.
+const locale = DEFAULT_LOCALE;
+Astro.response.status = 404;
+---
+
+<Layout locale={locale} title={t(locale, 'error.404.title')} description={t(locale, 'error.404.body')}>
+  <div class="container measure page">
+    <h1>{t(locale, 'error.404.title')}</h1>
+    <p>{t(locale, 'error.404.body')}</p>
+    <p><a class="btn" href={localePath(locale, '/')}>{t(locale, 'error.404.home')}</a></p>
+  </div>
+</Layout>
+
+<style>
+  .page { padding-block: var(--space-6); display: grid; gap: var(--space-4); justify-items: start; }
+  h1 { font-size: clamp(1.75rem, 1.2rem + 2.4vw, 2.5rem); }
+  p { margin: 0; }
+</style>

@@ -1,0 +1,26 @@
+---
+import type { StoryView } from '../lib/content/types';
+import ArticleCard from './ArticleCard.astro';
+
+interface Props { locale: string; stories: StoryView[] }
+const { locale, stories } = Astro.props;
+---
+
+<ul class="cards">
+  {stories.map((story) => (
+    <li><ArticleCard locale={locale} story={story} /></li>
+  ))}
+</ul>
+
+<style>
+  .cards {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: var(--space-4);
+    /* Una columna, dos o cuatro según el ancho disponible: lo decide la
+     * rejilla, no una escalera de puntos de ruptura por dispositivo. */
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  }
+</style>

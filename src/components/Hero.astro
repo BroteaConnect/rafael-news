@@ -1,0 +1,59 @@
+---
+import type { StoryView } from '../lib/content/types';
+import { formatDate } from '../lib/format';
+import { localePath, t } from '../lib/i18n';
+
+interface Props { locale: string; story: StoryView }
+const { locale, story } = Astro.props;
+const href = localePath(locale, `/noticia/${story.slug}`);
+---
+
+{/* Portada tipográfica y no fotográfica: el portal todavía no tiene banco de
+    imágenes propio y una foto de archivo genérica envejece peor que un titular
+    bien compuesto. Cuando F2 traiga imágenes reales de la base de datos,
+    entran aquí sin tocar el resto de la portada. */}
+<section class="hero" aria-labelledby="hero-title">
+  <div class="container inner">
+    <p class="meta">
+      <span class="tag">{story.topicName}</span>
+      <span class="relevance">· {t(locale, `relevance.${story.relevance}`)}</span>
+    </p>
+    <h1 id="hero-title"><a href={href}>{story.title}</a></h1>
+    <p class="standfirst measure">{story.standfirst}</p>
+    <p class="byline">
+      <span class="avatar" aria-hidden="true">{story.author.initials}</span>
+      <span>{story.author.name}</span>
+      <span aria-hidden="true">·</span>
+      <time datetime={story.publishedAt}>{formatDate(locale, story.publishedAt)}</time>
+      <span aria-hidden="true">·</span>
+      <span>{t(locale, 'article.reading', { minutes: story.readingMinutes })}</span>
+    </p>
+  </div>
+</section>
+
+<style>
+  .hero { background: var(--surface); border-block-end: 1px solid var(--border); }
+  .inner { display: flex; flex-direction: column; gap: var(--space-3); padding-block: var(--space-6); }
+  .meta { margin: 0; }
+  h1 {
+    margin: 0;
+    /* De 30 a 52px sin saltos: en el móvil más estrecho el titular sigue
+     * cabiendo en tres líneas y en escritorio manda sin gritar. */
+    font-size: clamp(1.875rem, 1.1rem + 3.4vw, 3.25rem);
+  }
+  h1 a { color: var(--text); text-decoration: none; }
+  h1 a:hover { color: var(--primary); }
+  .standfirst { margin: 0; font-size: 1.1875rem; color: var(--muted); }
+  .avatar {
+    display: inline-grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--primary);
+    color: var(--primary-contrast);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+</style>

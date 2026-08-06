@@ -1,8 +1,9 @@
 # rafael-news docs
 
-Documentation for the rafael-news static Astro landing. Start with
-[deployment.md](./deployment.md), which covers the multi-stage Dockerfile
-(Node build + nginx runtime), the required `PUBLIC_REQUIREMENTS_ENDPOINT`
-build ARG that wires the requirements form to its API at build time, the
-Coolify configuration (dockerfile build pack, port 80), and how the Brotea
-factory releases to production with green CI as the only gate.
+Documentation for Brotea News, the server-rendered Astro portal. Start with
+[deployment.md](./deployment.md), which covers the three-stage Dockerfile (node
+runtime, no nginx), the `runtime` service contract in `brotea.json` that CI and
+Coolify both read, the `PUBLIC_REQUIREMENTS_ENDPOINT` build ARG behind the
+newsletter intake, the Coolify configuration (dockerfile build pack, port 4321,
+`is_static=false`), and how the Brotea factory releases to production with green
+CI as the only gate.
