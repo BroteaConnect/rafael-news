@@ -109,6 +109,7 @@ const sourceFiles = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((
 const DYNAMIC = {
   'relevance.': ['high', 'medium', 'low'],
   'a11y.market.': ['up', 'down', 'flat'],
+  'admin.rol.': ['journalist', 'editor', 'owner'],
 };
 
 test('toda clave que piden los componentes existe en los dos diccionarios', () => {

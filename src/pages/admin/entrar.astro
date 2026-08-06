@@ -1,0 +1,87 @@
+---
+import Admin from '../../layouts/Admin.astro';
+import { CSRF_COOKIE, RateLimiter, SESSION_COOKIE, newCsrf, sessionExpiry } from '../../lib/auth/core';
+import { configured, login } from '../../lib/auth/store';
+import { DEFAULT_LOCALE, t } from '../../lib/i18n';
+
+export const prerender = false;
+const locale = DEFAULT_LOCALE;
+
+// Verificar una contraseña con scrypt cuesta CPU a propósito: sin límite, el
+// propio hash es la palanca del ataque. Por IP y también por cuenta, para que
+// nadie pueda bloquear a otro simplemente fallando su correo mil veces desde
+// distintas IPs... y para que mil IPs no puedan probar contra una sola cuenta.
+const porIp = new RateLimiter(10, 300_000);
+const porCuenta = new RateLimiter(5, 900_000);
+
+let error: string | null = null;
+
+if (Astro.request.method === 'POST') {
+  const form = Astro.locals.form!;
+  const email = String(form.get('email') ?? '').trim().toLowerCase();
+  const password = String(form.get('password') ?? '');
+  const ip = Astro.request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    ?? Astro.clientAddress ?? 'desconocida';
+
+  if (!configured()) {
+    error = t(locale, 'admin.entrar.sin-base');
+  } else if (porIp.limited(ip) || porCuenta.limited(email)) {
+    error = t(locale, 'admin.entrar.demasiados');
+  } else {
+    const token = await login(email, password, ip, Astro.request.headers.get('user-agent') ?? '');
+    if (token) {
+      porCuenta.clear(email);
+      Astro.cookies.set(SESSION_COOKIE, token, {
+        path: '/', httpOnly: true, sameSite: 'lax', secure: import.meta.env.PROD,
+        expires: sessionExpiry(new Date()),
+      });
+      // Cookie de CSRF nueva por sesión: reutilizar la anterior deja válido un
+      // token que pudo quedarse en un ordenador compartido.
+      Astro.cookies.set(CSRF_COOKIE, newCsrf(), {
+        path: '/', httpOnly: false, sameSite: 'lax', secure: import.meta.env.PROD, maxAge: 86400,
+      });
+      return Astro.redirect('/admin', 303);
+    }
+    // Mensaje ÚNICO: distinguir «no existe» de «contraseña incorrecta»
+    // convierte este formulario en una lista de quién escribe en este medio.
+    error = t(locale, 'admin.entrar.mal');
+  }
+}
+
+const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
+---
+
+<Admin title={t(locale, 'admin.entrar.title')}>
+  <h1>{t(locale, 'admin.entrar.title')}</h1>
+  {error && <p class="error" role="alert">{error}</p>}
+  <form method="post" class="formulario">
+    <input type="hidden" name="csrf" value={csrf} />
+    <label>
+      {t(locale, 'admin.campo.email')}
+      <input type="email" name="email" required autocomplete="username" />
+    </label>
+    <label>
+      {t(locale, 'admin.campo.password')}
+      <input type="password" name="password" required autocomplete="current-password" />
+    </label>
+    <button class="btn" type="submit">{t(locale, 'admin.entrar.enviar')}</button>
+  </form>
+  <p class="ayuda">{t(locale, 'admin.entrar.ayuda')}</p>
+</Admin>
+
+<style>
+  h1 { font-size: 1.75rem; margin-block-end: var(--space-4); }
+  .formulario { display: grid; gap: var(--space-3); max-width: 380px; }
+  label { display: grid; gap: var(--space-1); font-size: 0.9375rem; }
+  input {
+    min-height: 44px; padding: var(--space-2) var(--space-3); font: inherit;
+    color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .error {
+    padding: var(--space-3); margin-block-end: var(--space-4);
+    border: 1px solid var(--danger-strong); border-radius: var(--radius);
+    color: var(--danger-strong);
+  }
+  .ayuda { margin-block-start: var(--space-4); color: var(--muted); font-size: 0.875rem; max-width: 48ch; }
+</style>
