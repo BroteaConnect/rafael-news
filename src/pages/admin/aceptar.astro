@@ -1,0 +1,81 @@
+---
+import Admin from '../../layouts/Admin.astro';
+import { CSRF_COOKIE, MIN_PASSWORD, passwordProblem } from '../../lib/auth/core';
+import { acceptInvite } from '../../lib/auth/store';
+import { DEFAULT_LOCALE, t } from '../../lib/i18n';
+
+export const prerender = false;
+const locale = DEFAULT_LOCALE;
+
+// Se llega aquí SIN sesión, con el enlace del correo. Es el único camino por el
+// que nace un usuario: no hay ninguna ruta que cree privilegios sin invitación.
+const token = Astro.url.searchParams.get('t') ?? '';
+let error: string | null = null;
+let listo = false;
+
+if (Astro.request.method === 'POST') {
+  const form = Astro.locals.form!;
+  const password = String(form.get('password') ?? '');
+  const nombre = String(form.get('nombre') ?? '').trim();
+  const tokenForm = String(form.get('token') ?? '');
+
+  const problema = passwordProblem(password);
+  if (!nombre) error = t(locale, 'admin.aceptar.sin-nombre');
+  else if (problema === 'short') error = t(locale, 'admin.aceptar.corta', { min: MIN_PASSWORD });
+  else if (problema === 'long') error = t(locale, 'admin.aceptar.larga');
+  else {
+    const result = await acceptInvite(tokenForm, password, nombre);
+    if (result === 'ok') listo = true;
+    else if (result === 'expired') error = t(locale, 'admin.aceptar.caducada');
+    else error = t(locale, 'admin.aceptar.invalida');
+  }
+}
+
+const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
+---
+
+<Admin title={t(locale, 'admin.aceptar.title')}>
+  <h1>{t(locale, 'admin.aceptar.title')}</h1>
+
+  {listo ? (
+    <>
+      <p class="ok" role="status">{t(locale, 'admin.aceptar.listo')}</p>
+      <a class="btn" href="/admin/entrar">{t(locale, 'admin.entrar.title')}</a>
+    </>
+  ) : (
+    <>
+      <p class="intro">{t(locale, 'admin.aceptar.intro')}</p>
+      {error && <p class="error" role="alert">{error}</p>}
+      <form method="post" class="formulario">
+        <input type="hidden" name="csrf" value={csrf} />
+        <input type="hidden" name="token" value={token} />
+        <label>
+          {t(locale, 'admin.aceptar.nombre')}
+          <input type="text" name="nombre" required maxlength="120" autocomplete="name" />
+        </label>
+        <label>
+          {t(locale, 'admin.campo.password')}
+          <input type="password" name="password" required minlength={MIN_PASSWORD} autocomplete="new-password" />
+          {/* Longitud mínima y ninguna regla de símbolos: exigir
+              mayúscula-número-símbolo es lo que produce `P@ssw0rd1`. */}
+          <small>{t(locale, 'admin.aceptar.pista', { min: MIN_PASSWORD })}</small>
+        </label>
+        <button class="btn" type="submit">{t(locale, 'admin.aceptar.enviar')}</button>
+      </form>
+    </>
+  )}
+</Admin>
+
+<style>
+  h1 { font-size: 1.75rem; margin-block-end: var(--space-3); }
+  .intro { color: var(--muted); margin-block-end: var(--space-4); max-width: 60ch; }
+  .formulario { display: grid; gap: var(--space-3); max-width: 420px; }
+  label { display: grid; gap: var(--space-1); font-size: 0.9375rem; }
+  input {
+    min-height: 44px; padding: var(--space-2) var(--space-3); font: inherit; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  small { color: var(--muted); }
+  .ok { padding: var(--space-3); border: 1px solid var(--ok-strong); border-radius: var(--radius); color: var(--ok-strong); margin-block-end: var(--space-4); }
+  .error { padding: var(--space-3); border: 1px solid var(--danger-strong); border-radius: var(--radius); color: var(--danger-strong); margin-block-end: var(--space-4); }
+</style>

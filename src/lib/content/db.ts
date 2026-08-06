@@ -10,12 +10,14 @@ import pg from 'pg';
 // y la migración fallaría solo en producción, que es donde peor se descubre.
 import migration001 from '../../migrations/001_content.sql?raw';
 import migration002 from '../../migrations/002_newsletter.sql?raw';
+import migration003 from '../../migrations/003_auth.sql?raw';
 import seedData from './seed.data.json';
 import type { ContentSource, Localized, Story, TopicId } from './types';
 
 const MIGRATIONS: ReadonlyArray<readonly [string, string]> = [
   ['001_content', migration001],
   ['002_newsletter', migration002],
+  ['003_auth', migration003],
 ];
 
 let pool: pg.Pool | null = null;

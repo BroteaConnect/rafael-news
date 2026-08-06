@@ -8,3 +8,14 @@ declare module '*.sql?raw' {
   const contents: string;
   export default contents;
 }
+
+// La sesión de la redacción, puesta por el middleware en CADA petición. Es
+// `null` para el público: una página de /admin nunca tiene que preguntarse si
+// el objeto existe, solo si hay alguien dentro.
+declare namespace App {
+  interface Locals {
+    user: import('./lib/auth/store').SessionUser | null;
+    /** el cuerpo del POST, leído UNA vez por el middleware (ver su comentario) */
+    form: FormData | null;
+  }
+}

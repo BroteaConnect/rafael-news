@@ -1,0 +1,96 @@
+---
+import Admin from '../../layouts/Admin.astro';
+import { CSRF_COOKIE } from '../../lib/auth/core';
+import { profileOf, updateProfile } from '../../lib/auth/store';
+import { DEFAULT_LOCALE, LOCALES, t } from '../../lib/i18n';
+
+export const prerender = false;
+const locale = DEFAULT_LOCALE;
+const user = Astro.locals.user!;
+
+// El perfil es traducible como todo lo editorial: se edita un idioma cada vez,
+// que es exactamente por lo que author_i18n son filas y no una columna jsonb.
+const editando = Astro.url.searchParams.get('idioma');
+const idioma = LOCALES.includes(editando ?? '') ? String(editando) : DEFAULT_LOCALE;
+
+let guardado = false;
+let error: string | null = null;
+
+if (Astro.request.method === 'POST') {
+  const form = Astro.locals.form!;
+  const nombre = String(form.get('nombre') ?? '').trim();
+  const rol = String(form.get('rol') ?? '').trim();
+  const bio = String(form.get('bio') ?? '').trim();
+  const idiomaForm = String(form.get('idioma') ?? DEFAULT_LOCALE);
+
+  if (!user.authorId) {
+    error = t(locale, 'admin.perfil.sin-autor');
+  } else if (!nombre) {
+    error = t(locale, 'admin.perfil.sin-nombre');
+  } else {
+    await updateProfile(user, nombre, rol, bio, LOCALES.includes(idiomaForm) ? idiomaForm : DEFAULT_LOCALE);
+    guardado = true;
+  }
+}
+
+const perfil = user.authorId ? await profileOf(user.authorId, idioma) : null;
+const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
+---
+
+<Admin title={t(locale, 'admin.acc.perfil')} user={user}>
+  <h1>{t(locale, 'admin.acc.perfil')}</h1>
+  <p class="intro">{t(locale, 'admin.perfil.intro')}</p>
+
+  <nav class="idiomas" aria-label={t(locale, 'admin.perfil.idiomas')}>
+    {LOCALES.map((code) => (
+      <a href={`/admin/perfil?idioma=${code}`} aria-current={code === idioma ? 'page' : undefined}>{code}</a>
+    ))}
+  </nav>
+
+  {guardado && <p class="ok" role="status">{t(locale, 'admin.perfil.guardado')}</p>}
+  {error && <p class="error" role="alert">{error}</p>}
+
+  <form method="post" class="formulario">
+    <input type="hidden" name="csrf" value={csrf} />
+    <input type="hidden" name="idioma" value={idioma} />
+    <label>
+      {t(locale, 'admin.perfil.nombre')}
+      <input type="text" name="nombre" required maxlength="120" value={perfil?.name ?? ''} />
+    </label>
+    <label>
+      {t(locale, 'admin.perfil.rol')}
+      <input type="text" name="rol" maxlength="120" value={perfil?.role ?? ''} />
+    </label>
+    <label>
+      {t(locale, 'admin.perfil.bio')}
+      <textarea name="bio" rows="5" maxlength="800">{perfil?.bio ?? ''}</textarea>
+    </label>
+    <button class="btn" type="submit">{t(locale, 'admin.perfil.guardar')}</button>
+  </form>
+
+  {/* El cambio se ve en la portada al instante: escribe en las mismas tablas
+      que lee el público, y el trigger de contenido refresca la instantánea. */}
+  <p class="ayuda">{t(locale, 'admin.perfil.ayuda')}</p>
+</Admin>
+
+<style>
+  h1 { font-size: 1.75rem; }
+  .intro { color: var(--muted); margin-block: var(--space-2) var(--space-4); max-width: 60ch; }
+  .idiomas { display: flex; gap: var(--space-2); margin-block-end: var(--space-4); }
+  .idiomas a {
+    padding: var(--space-1) var(--space-3); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text); text-decoration: none; text-transform: uppercase;
+    font-size: 0.8125rem; font-weight: 600;
+  }
+  .idiomas a[aria-current='page'] { background: var(--primary); color: var(--primary-contrast); border-color: var(--primary); }
+  .formulario { display: grid; gap: var(--space-3); max-width: 560px; }
+  label { display: grid; gap: var(--space-1); font-size: 0.9375rem; }
+  input, textarea {
+    padding: var(--space-2) var(--space-3); font: inherit; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  input { min-height: 44px; }
+  .ok { padding: var(--space-3); border: 1px solid var(--ok-strong); border-radius: var(--radius); color: var(--ok-strong); margin-block-end: var(--space-4); }
+  .error { padding: var(--space-3); border: 1px solid var(--danger-strong); border-radius: var(--radius); color: var(--danger-strong); margin-block-end: var(--space-4); }
+  .ayuda { margin-block-start: var(--space-4); color: var(--muted); font-size: 0.875rem; max-width: 60ch; }
+</style>

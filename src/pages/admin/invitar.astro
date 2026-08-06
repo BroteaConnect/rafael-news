@@ -1,0 +1,75 @@
+---
+import Admin from '../../layouts/Admin.astro';
+import { CSRF_COOKIE, ROLES, can, isRole } from '../../lib/auth/core';
+import { invite } from '../../lib/auth/store';
+import { normalizeEmail } from '../../lib/newsletter/core';
+import { sendInvite } from '../../lib/auth/mail';
+import { DEFAULT_LOCALE, t } from '../../lib/i18n';
+
+export const prerender = false;
+const locale = DEFAULT_LOCALE;
+const user = Astro.locals.user!;
+
+// El permiso se comprueba AQUÍ, en el servidor. Que el enlace no salga en el
+// panel de quien no puede invitar es cosmética: quien escriba la URL a mano
+// tiene que encontrarse un 403, no un formulario.
+if (!can(user.role, 'user:invite')) return new Response(null, { status: 403 });
+
+let enviado: string | null = null;
+let error: string | null = null;
+
+if (Astro.request.method === 'POST') {
+  const form = Astro.locals.form!;
+  const email = normalizeEmail(form.get('email'));
+  const rol = String(form.get('rol') ?? 'journalist');
+
+  if (!email) error = t(locale, 'admin.invitar.email-malo');
+  else if (!isRole(rol)) error = t(locale, 'admin.invitar.rol-malo');
+  else {
+    const token = await invite(email, rol, user.id);
+    const url = new URL('/admin/aceptar', Astro.site ?? Astro.url.origin);
+    url.searchParams.set('t', token);
+    const ok = await sendInvite(email, locale, url.href);
+    enviado = ok ? t(locale, 'admin.invitar.enviada', { email })
+      : t(locale, 'admin.invitar.sin-correo', { email });
+  }
+}
+
+const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
+---
+
+<Admin title={t(locale, 'admin.acc.invitar')} user={user}>
+  <h1>{t(locale, 'admin.acc.invitar')}</h1>
+  <p class="intro">{t(locale, 'admin.invitar.intro')}</p>
+
+  {enviado && <p class="ok" role="status">{enviado}</p>}
+  {error && <p class="error" role="alert">{error}</p>}
+
+  <form method="post" class="formulario">
+    <input type="hidden" name="csrf" value={csrf} />
+    <label>
+      {t(locale, 'admin.campo.email')}
+      <input type="email" name="email" required maxlength="200" />
+    </label>
+    <label>
+      {t(locale, 'admin.invitar.rol')}
+      <select name="rol">
+        {ROLES.map((r) => <option value={r}>{t(locale, `admin.rol.${r}`)}</option>)}
+      </select>
+    </label>
+    <button class="btn" type="submit">{t(locale, 'admin.invitar.enviar')}</button>
+  </form>
+</Admin>
+
+<style>
+  h1 { font-size: 1.75rem; }
+  .intro { color: var(--muted); margin-block: var(--space-2) var(--space-4); max-width: 60ch; }
+  .formulario { display: grid; gap: var(--space-3); max-width: 420px; }
+  label { display: grid; gap: var(--space-1); font-size: 0.9375rem; }
+  input, select {
+    min-height: 44px; padding: var(--space-2) var(--space-3); font: inherit; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .ok { padding: var(--space-3); border: 1px solid var(--ok-strong); border-radius: var(--radius); color: var(--ok-strong); margin-block-end: var(--space-4); }
+  .error { padding: var(--space-3); border: 1px solid var(--danger-strong); border-radius: var(--radius); color: var(--danger-strong); margin-block-end: var(--space-4); }
+</style>

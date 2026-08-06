@@ -1,0 +1,55 @@
+---
+import '../styles/theme.css';
+import '../styles/base.css';
+import { CSRF_COOKIE } from '../lib/auth/core';
+import { DEFAULT_LOCALE, t } from '../lib/i18n';
+
+// La redacción NO lleva JavaScript: formularios que postean y redirigen. Además
+// de ser menos que mantener, garantiza lo que el plan exige — que el paquete de
+// la redacción no aparezca jamás en una página pública, porque no existe.
+interface Props { title: string; user?: { email: string; role: string } | null }
+const { title, user = null } = Astro.props;
+const locale = DEFAULT_LOCALE;
+const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
+---
+
+<!doctype html>
+<html lang={locale}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>{title} · {t(locale, 'admin.title')}</title>
+  </head>
+  <body>
+    <header class="barra">
+      <div class="container inner">
+        <a class="marca" href="/admin">{t(locale, 'admin.title')}</a>
+        {user && (
+          <div class="sesion">
+            <span>{user.email}</span>
+            <span class="rol">{t(locale, `admin.rol.${user.role}`)}</span>
+            {/* Salir es un POST: un GET que cierra sesión lo dispara cualquier
+                <img> de un correo o de otra web. */}
+            <form method="post" action="/admin/salir">
+              <input type="hidden" name="csrf" value={csrf} />
+              <button class="btn btn-ghost" type="submit">{t(locale, 'admin.salir')}</button>
+            </form>
+          </div>
+        )}
+      </div>
+    </header>
+    <main class="container contenido">
+      <slot />
+    </main>
+  </body>
+</html>
+
+<style>
+  .barra { background: var(--surface); border-block-end: 1px solid var(--border); }
+  .inner { display: flex; align-items: center; gap: var(--space-4); min-height: 60px; flex-wrap: wrap; }
+  .marca { font-family: var(--font-display); font-size: 1.125rem; font-weight: 600; color: var(--text); text-decoration: none; }
+  .sesion { display: flex; align-items: center; gap: var(--space-3); margin-inline-start: auto; font-size: 0.875rem; color: var(--muted); }
+  .rol { padding: 2px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius); }
+  .contenido { padding-block: var(--space-5); max-width: 900px; }
+</style>
