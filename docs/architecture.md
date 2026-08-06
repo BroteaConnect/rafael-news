@@ -1,9 +1,10 @@
 # Architecture
 
 Brotea News is an Astro app with `output: 'server'` (node adapter, standalone):
-**every route is rendered per request**, no page opts into prerendering. Content
-comes from a typed seed behind async accessors; the pages never see where it is
-stored. Runtime and packaging live in [deployment.md](./deployment.md).
+**every route is rendered per request**, no page opts into prerendering.
+Editorial content lives in Postgres, but a request never queries it: pages read
+an in-memory snapshot behind async accessors (see [Content layer](#content-layer)).
+Runtime and packaging live in [deployment.md](./deployment.md).
 
 ## Routes
 
@@ -17,7 +18,7 @@ one per language.
 | `/` | `/en/` | `src/pages/[...lang]/index.astro` | home: hero, cards, newsletter, author, topics |
 | `/noticias` | `/en/noticias` | `[...lang]/noticias.astro` | every story, newest first |
 | `/temas` | `/en/temas` | `[...lang]/temas.astro` | topic tiles with counts |
-| `/noticia/<slug>` | `/en/noticia/<slug>` | `[...lang]/noticia/[slug].astro` | story page + `NewsArticle` JSON-LD + related |
+| `/noticia/<slug>` | `/en/noticia/<slug>` | `[...lang]/noticia/[slug].astro` | story page: sanitised `body` HTML (or the pending notice) + `NewsArticle` JSON-LD + related |
 | `/tema/<slug>` | `/en/tema/<slug>` | `[...lang]/tema/[slug].astro` | stories of one topic |
 | `/autor/<slug>` | `/en/autor/<slug>` | `[...lang]/autor/[slug].astro` | author page + their stories |
 | `/legal` | `/en/legal` | `[...lang]/legal.astro` | notice / `#privacidad` / `#cookies` |
@@ -30,6 +31,12 @@ Locale-agnostic endpoints (no language prefix):
 | --- | --- | --- |
 | `GET /healthz` | `src/pages/healthz.ts` | `200 {"ok":true,"commit":"<sha or null>"}`, `Cache-Control: no-store` |
 | `POST /api/newsletter` | `src/pages/api/newsletter.ts` | `202` accepted, `400` invalid email, `502` upstream failed |
+| `GET /rss.xml` | `src/pages/rss.xml.ts` | RSS 2.0 feed of every story, default locale only (`<language>es-ES</language>`) |
+| `GET /sitemap.xml` | `src/pages/sitemap.xml.ts` | every URL in every locale, each with `xhtml:link` hreflang alternates |
+
+Both feeds are built from the snapshot, so a story enters `/rss.xml` and
+`/sitemap.xml` the moment it enters the home page — no scheduled job. Absolute
+URLs come from `site` in `astro.config.mjs`.
 
 Language resolution in every page is `resolveLocale(Astro.params.lang)` from
 `src/lib/route.ts`: no prefix → default locale, a published locale → that
@@ -51,31 +58,135 @@ curl -i -X POST localhost:4321/api/newsletter \
   -H 'Content-Type: application/json' \
   -d '{"email":"lector@example.com","locale":"es"}'
 # HTTP/1.1 202 Accepted → {"message":"<translated>"}
+
+curl -s localhost:4321/rss.xml | head -5
+curl -s localhost:4321/sitemap.xml | head -5
 ```
 
 The search index is one response per locale (`Cache-Control: public,
-s-maxage=60, stale-while-revalidate=86400`); filtering happens in the browser
-inside `Search.astro`, which fetches it the first time the dialog opens.
+max-age=0, s-maxage=60, stale-while-revalidate=86400`); filtering happens in the
+browser inside `Search.astro`, which fetches it the first time the dialog opens.
+It is built from the same snapshot as the pages, so a new story shows up in
+search and on the home page at the same instant.
 
-## Content contract
+## Content layer
 
-Two files, and they are the boundary F2 (database-backed content) works against.
+Editorial content lives in Postgres. **No page ever queries it.** The whole
+published corpus is loaded into an in-memory snapshot at boot and rebuilt when
+the newsroom publishes; the accessors read that snapshot, so rendering a page is
+CPU and nothing else — and a Postgres outage does not take the portal down.
+
+```
+src/lib/content/types.ts        types only (entities + views)
+src/lib/content/store.ts        the accessors every page calls (the read gate)
+src/lib/content/snapshot.ts     the in-memory snapshot: init(), current(), contentVersion()
+src/lib/content/db.ts           Postgres: migration, snapshot query, LISTEN
+src/lib/content/seed.data.json  fallback content and the first-run seed rows
+src/migrations/001_content.sql  the schema
+src/middleware.ts               boots the snapshot, sets ETag / Cache-Control
+```
+
+```mermaid
+graph LR
+  R[Reader] -->|GET| P[Page]
+  P --> S[store.ts accessors]
+  S --> M[(in-memory snapshot)]
+  DB[(Postgres)] -. boot + NOTIFY .-> M
+  N[Newsroom] -->|publishes| DB
+```
+
+### Data model
+
+`src/migrations/001_content.sql`. Translatable text lives in **rows per locale**,
+not in a `jsonb` column, so editing one language never overwrites another.
+
+| Table | Columns |
+| --- | --- |
+| `authors` | `id` PK, `slug` UNIQUE, `name`, `created_at`, `updated_at` |
+| `author_i18n` | `author_id`, `locale` (PK together), `role`, `bio` |
+| `topics` | `id` PK, `slug` UNIQUE, `sort_order` |
+| `topic_i18n` | `topic_id`, `locale` (PK together), `name` |
+| `stories` | `id` PK, `slug` UNIQUE, `topic_id`, `author_id`, `relevance` (`high\|medium\|low`), `status` (`draft\|scheduled\|published\|archived`, default `draft`), `published_at`, `reading_minutes`, `lead`, `created_at`, `updated_at` |
+| `story_i18n` | `story_id`, `locale` (PK together), `title`, `standfirst`, `body_md`, `body_html` |
+| `content_version` | single row (`id boolean PK CHECK (id)`), `version bigint` |
+| `schema_migrations` | `version` PK, `applied_at` |
+
+- The snapshot only loads `status='published' AND published_at <= now()`, so
+  drafts and scheduled stories are invisible to readers.
+- A partial unique index (`stories_one_lead ... WHERE lead AND status='published'`)
+  makes two lead stories impossible.
+- `body_html` is stored already rendered and sanitised; templates print it with
+  `<Fragment set:html>`. A story without `body_html` renders the
+  `article.body-pending` copy instead of an invented text.
+
+### Snapshot and invalidation
+
+`snapshot.ts` holds one `ContentSource` plus its version number, swapped whole
+on every refresh:
+
+1. `init()` is called from `src/middleware.ts` on every request and memoised, so
+   only the first request ever waits — and it **never throws**.
+2. Without `DATABASE_URL` it logs and serves `seed.data.json`. That is the local
+   and CI mode: the portal runs with no database at all.
+3. With `DATABASE_URL`: `migrate()` → `refresh()` → `listen()`. If any of that
+   fails (Postgres down, unreachable, mid-restart) the error is logged and the
+   seed keeps being served; the process still boots and `/healthz` still answers.
+4. `refresh()` runs one query per table (`loadSnapshot()`) and swaps the whole
+   object. **If the query returns zero stories the previous snapshot is kept** —
+   a half-failed read must not blank the home page.
+5. `listen()` opens a *dedicated* connection (outside the pool, since `LISTEN`
+   occupies it forever) and runs `LISTEN contenido`. On connection error it
+   retries every 5s.
+6. Any `INSERT/UPDATE/DELETE` on `stories`, `story_i18n`, `authors` or
+   `author_i18n` fires the `bump_content_version()` trigger, which increments
+   `content_version.version` and `pg_notify('contenido', <version>)`. The app
+   rebuilds the snapshot on that notification — not per visit.
+
+`market` is **not** in the database yet: `loadSnapshot()` still takes it from
+`seed.data.json`.
+
+Connection pool (`db.ts`): `max: 5`, `connectionTimeoutMillis: 5000`,
+`idle_in_transaction_session_timeout: 10000`, and a `pool.on('error')` handler —
+without it a dropped database connection would kill the whole node process.
+
+### ETag and caching
+
+`src/middleware.ts` stamps every cacheable `200 GET` response:
+
+```
+ETag: W/"v<contentVersion>-<pathname>"
+Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=86400
+```
+
+A matching `If-None-Match` gets `304` with no body. The version comes from
+`content_version`, so publishing invalidates every page at once and nobody has
+to remember to purge anything. `/api/*` and `/healthz` are excluded.
+
+```bash
+etag=$(curl -sI localhost:4321/ | grep -i '^etag:' | cut -d' ' -f2- | tr -d '\r')
+curl -sI -H "If-None-Match: $etag" localhost:4321/ | head -1
+# HTTP/1.1 304 Not Modified
+```
+
+### Contract
 
 `src/lib/content/types.ts` — types only:
 
 - `Localized = Record<Locale, string>` — the same text in every published language.
-- Entities, shaped like the future rows: `Author` (`id`, `slug`, `name`,
-  `role`, `bio`), `Topic` (`id: TopicId`, `slug`, `name`), `Story` (`id`,
-  `slug`, `topicId`, `authorId`, `relevance`, `publishedAt` ISO-8601 UTC,
-  `readingMinutes`, `title`, `standfirst`, `lead`), `Quote` (`id`, `name`,
-  `value`, `decimals`, `changePct`), `MarketSnapshot` (`quotes`, `asOf`,
-  `delayMinutes`, `sample`) and `ContentSource` grouping all of them.
+- Entities, shaped like the rows: `Author` (`id`, `slug`, `name`, `role`,
+  `bio`), `Topic` (`id: TopicId`, `slug`, `name`), `Story` (`id`, `slug`,
+  `topicId`, `authorId`, `relevance`, `publishedAt` ISO-8601 UTC,
+  `readingMinutes`, `title`, `standfirst`, `lead`, optional `body` — the
+  sanitised HTML per locale), `Quote` (`id`, `name`, `value`, `decimals`,
+  `changePct`), `MarketSnapshot` (`quotes`, `asOf`, `delayMinutes`, `sample`)
+  and `ContentSource` grouping all of them.
 - Views, one entity already resolved for one language: `AuthorView`,
-  `TopicView` (adds `count`), `StoryView` (adds `topicName`, `topicSlug` and a
-  nested `AuthorView`). **Views carry plain strings, never `Localized`** — no
-  component has to know how a language is picked.
+  `TopicView` (adds `count`), `StoryView` (adds `topicName`, `topicSlug`,
+  `body` — sanitised HTML or `''` — and a nested `AuthorView`). **Views carry
+  plain strings, never `Localized`** — no component has to know how a language
+  is picked.
 
-`src/lib/content/seed.ts` — the only read gate. Every accessor is `async`:
+`src/lib/content/store.ts` — the only read gate. Every accessor is `async`:
 
 | Accessor | Returns |
 | --- | --- |
@@ -95,15 +206,17 @@ Helpers exported alongside them: `localize(value, locale)` (falls back to the
 default locale, never to a blank), `isStale(snapshot, now?)` and
 `STALE_AFTER_MINUTES = 20`.
 
-Rules that make the F2 swap a no-op for the pages:
+Rules:
 
-- **The accessors are the contract.** F2 replaces their bodies with Postgres
-  queries; signatures and view shapes do not change, so no page changes.
-- They are `async` today on purpose, with an in-memory seed that does not need
-  it — a synchronous accessor would be a promise F2 could not keep.
-- **Pages must never import the raw data.** The seed lives in
-  `src/lib/content/seed.data.json` (plain JSON so the node test can read it
-  without Vite); only `seed.ts` imports it, and that file disappears in F2.
+- **The accessors are the contract.** Moving the source from JSON to Postgres
+  changed only the body of `store.ts` (one import: `current()` from
+  `snapshot.ts`); no page changed. Keep it that way.
+- They stay `async` even though reading memory does not need it: that signature
+  is what made the swap possible.
+- **Pages must never import the raw data.** `src/lib/content/seed.data.json` is
+  plain JSON (so the node test can read it without Vite) and only `db.ts` and
+  `snapshot.ts` import it — as the cold-start fallback and as the rows loaded on
+  first run.
 
 ## Copy vs content
 
@@ -114,10 +227,11 @@ Two different things, and they live in two different places.
   markup only through `t(locale, 'key')`. Never hardcoded in a component.
 - **Editorial content** — headlines, standfirsts, topic names, the author bio,
   market instrument names: `Localized` fields inside the content model. A
-  headline is a row, not interface copy: in F2 it lives in a multilingual table,
-  not in a locale file, so the model already looks today like what it will be.
+  headline is a row, not interface copy: it lives in `story_i18n` /
+  `topic_i18n` / `author_i18n`, never in a locale file.
 
-`src/locales/content.test.mjs` enforces both halves:
+`src/locales/content.test.mjs` enforces both halves against the seed
+(`seed.data.json`), which is what a fresh database is loaded with:
 
 1. every localized field in the seed exists and is non-empty in each `required`
    locale, and carries no undeclared language;
@@ -176,7 +290,10 @@ preload, analytics and error-tracking snippets, header, `<main>`, footer.
   percentage and a visually hidden `a11y.market.<up|down|flat>` label.
 - Astro traps this app already hit: a scoped `<style>` never matches nodes built
   with `createElement` (`Search.astro` uses `:global()` for its results), and
-  `[hidden]` loses to any author `display` rule.
+  `[hidden]` loses to any author `display` rule. Same reason the article body
+  styles itself with `.body :global(p)`, `:global(h2)`, `:global(blockquote)`…:
+  the HTML arrives from the database, so it never carries Astro's scope
+  attribute. Prose is constrained to `--measure`, not to `--container`.
 
 **Generated files — never edit them in this repo.** Fix them in the factory and
 re-sync; the next sync overwrites local changes:
@@ -208,6 +325,9 @@ the next `brotea quality sync` would overwrite it.
 files execute in bare node (`node --test`), without Vite: read fixtures with
 `fs`, never `import` a `.ts` module that pulls in `import.meta.glob`. That is
 why the seed data sits in `seed.data.json` next to the module that consumes it.
+
+Neither `npm test` nor CI needs a database: without `DATABASE_URL` the app
+serves the seed, which is also how `npm run dev` works locally.
 
 Green `npm test` proves nothing about the runtime — the image is built, run and
 curled by the docker CI job (see [deployment.md](./deployment.md)).
