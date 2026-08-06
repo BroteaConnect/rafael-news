@@ -1,70 +1,76 @@
-# La redacción: acceso, roles y arranque
+# The newsroom: access, roles and bootstrap
 
-/ admin es la parte privada del portal. No lleva **ni una línea de JavaScript**:
-formularios que postean y redirigen. Además de ser menos que mantener, garantiza
-que el paquete de la redacción no aparezca jamás en una página pública, porque
-no existe.
+`/admin` is the private half of the portal. It ships **not one line of
+JavaScript**: forms that post and redirect. Besides being less to maintain, it
+guarantees that the newsroom bundle can never show up on a public page, because
+it does not exist.
 
-## Cómo se entra
+## How you get in
 
-Solo por invitación. Un `owner` invita desde `/admin/invitar`; el enlace es de
-un solo uso, caduca en 72 horas y quien lo recibe elige su contraseña y el
-nombre con el que firma. Aceptar la invitación crea a la vez el usuario y su
-ficha pública de autor: quien entra en una redacción viene a firmar.
+By invitation only. An `owner` invites from `/admin/invitar`; the link is
+single-use, expires in 72 hours, and whoever receives it picks their own
+password and the name they sign with. Accepting the invitation creates the user
+and their public author record at the same time: whoever joins a newsroom comes
+to sign their work.
 
 ## Roles
 
 | | journalist | editor | owner |
 |---|---|---|---|
-| Editar su perfil público | ✅ | ✅ | ✅ |
-| Escribir y editar sus borradores (F6) | ✅ | ✅ | ✅ |
-| Editar lo de otros (F6) | — | ✅ | ✅ |
-| Publicar (F6) | — | ✅ | ✅ |
-| Invitar | — | — | ✅ |
+| Edit their public profile | ✅ | ✅ | ✅ |
+| Write and edit their own drafts (F6) | ✅ | ✅ | ✅ |
+| Edit other people's work (F6) | — | ✅ | ✅ |
+| Publish (F6) | — | ✅ | ✅ |
+| Invite | — | — | ✅ |
 
-Los permisos se comprueban **en el servidor y por ruta**. Que un enlace no
-aparezca en el panel es cosmética: quien escriba la URL a mano se encuentra un
-403.
+Permissions are checked **on the server and per route**. A link missing from the
+dashboard is cosmetics: whoever types the URL by hand meets a 403.
 
-## El primer responsable (arranque)
+## The first owner (bootstrap)
 
-**No existe** —ni existirá— un camino tipo «si no hay usuarios, el primero que
-llegue se hace owner». Ese atajo es una vulnerabilidad clásica: basta con llegar
-antes. El primer owner se crea insertando su invitación directamente en la base
-de datos, que es una acción que ya exige acceso al servidor:
+There is **no** — and there will be no — "if there are no users, the first one
+to arrive becomes owner" path. That shortcut is a classic vulnerability: all it
+takes is arriving first. The first owner is created by inserting their
+invitation directly in the database, which is an action that already requires
+server access:
 
 ```bash
-# 1. Generar el token y su hash (el token EN CLARO no se guarda en ningún sitio)
+# 1. Generate the token and its hash (the CLEAR-TEXT token is stored nowhere)
 TOKEN=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
 HASH=$(node -e "console.log(require('crypto').createHash('sha256').update('$TOKEN').digest('hex'))")
 
-# 2. Insertar la invitación (72 h)
+# 2. Insert the invitation (72 h)
 psql "$DATABASE_URL" -c "INSERT INTO invites (email, role, token_hash, expires_at)
   VALUES ('quien.manda@ejemplo.com', 'owner', '$HASH', now() + interval '72 hours')"
 
-# 3. Entregar este enlace a esa persona, por un canal privado:
+# 3. Hand this link to that person, over a private channel:
 echo "https://rafael-news.brotea.dev/admin/aceptar?t=$TOKEN"
 ```
 
-A partir de ahí, esa persona invita al resto desde la interfaz.
+From then on, that person invites everybody else from the interface.
 
-## Qué protege qué
+## What protects what
 
-- **Sesiones opacas en base de datos**, no JWT: hace falta poder revocar al
-  instante. Suspender a alguien tiene que **echarlo si ya está dentro**, no solo
-  impedirle volver — por eso la sesión comprueba el estado del usuario en cada
-  petición.
-- **`scrypt` de `node:crypto`**, con sal por usuario y los parámetros guardados
-  junto al hash, para poder subir el coste mañana sin invalidar la contraseña de
-  nadie. Ojo si se sube: scrypt necesita ~128·N·r bytes y el tope por defecto de
-  Node son 32 MB, así que `maxmem` se calcula de N·r (con N=2¹⁵ y r=8 hacen falta
-  33,5 MB, y sin subirlo **cada intento de entrada lanza**).
-- **CSRF por doble envío** en todo POST, comparado en tiempo constante.
-- **Mensajes de error genéricos**: si «no existe ese correo» y «contraseña
-  incorrecta» se distinguieran, el formulario diría quién escribe en este medio.
-  Por lo mismo, un correo inexistente también paga el coste de un scrypt: si no,
-  el tiempo de respuesta lo delataría igual.
-- **Cambiar la contraseña revoca todas las sesiones abiertas**: si te la robaron,
-  cambiarla tiene que servir de algo.
-- **Registro de auditoría** de entrada, salida, invitación y cambio de perfil.
-  Cuando algo se publique mal, la pregunta será quién y cuándo.
+- **Opaque sessions in the database**, not JWTs: instant revocation is a
+  requirement. Suspending someone has to **throw them out if they are already
+  inside**, not just stop them coming back — which is why the session checks the
+  user's status on every request. There is no suspension screen yet: it is
+  `UPDATE users SET status='suspended' WHERE email=…`, and the next request that
+  person makes lands on the sign-in page.
+- **`scrypt` from `node:crypto`**, with a per-user salt and the parameters
+  stored next to the hash, so the cost can be raised tomorrow without
+  invalidating anybody's password. Careful when raising it: scrypt needs about
+  128·N·r bytes and node's default ceiling is 32 MB, so `maxmem` is computed
+  from N·r (with N=2¹⁵ and r=8 it needs 33.5 MB, and without raising it **every
+  sign-in attempt throws**).
+- **Double-submit CSRF** on every POST, compared in constant time.
+- **Generic error messages**: if "no such address" and "wrong password" could be
+  told apart, the form would say who writes for this outlet. For the same
+  reason, a non-existent address also pays the cost of a scrypt verification —
+  otherwise the response time would give it away anyway.
+- **Changing the password revokes every open session**: if it was stolen,
+  changing it has to be worth something. (The reset flow that triggers this has
+  no page yet — `/admin/restablecer` does not exist. Today a lost password is
+  fixed by sending a new invitation to the same address.)
+- **Audit log** of sign-in, sign-out, invitation and profile change. When
+  something gets published wrong, the question will be who and when.
