@@ -22,7 +22,7 @@ one per language.
 | Spanish | English | File | Renders |
 | --- | --- | --- | --- |
 | `/` | `/en/` | `src/pages/[...lang]/index.astro` | home: hero, cards, newsletter, author, topics |
-| `/noticias` | `/en/noticias` | `[...lang]/noticias.astro` | every story, newest first |
+| `/noticias` | `/en/noticias` | `[...lang]/noticias.astro` | every story, newest first, grouped by day (`StoryDays`) |
 | `/temas` | `/en/temas` | `[...lang]/temas.astro` | topic tiles with counts |
 | `/noticia/<slug>` | `/en/noticia/<slug>` | `[...lang]/noticia/[slug].astro` | story page: sanitised `body` HTML (or the pending notice) + `NewsArticle` JSON-LD + related |
 | `/tema/<slug>` | `/en/tema/<slug>` | `[...lang]/tema/[slug].astro` | stories of one topic |
@@ -54,7 +54,7 @@ and every `/admin` response ships `Cache-Control: no-store` and
 
 | Route | Behaviour |
 | --- | --- |
-| `GET /admin/noticias` | story list, split into *mine* and *the rest of the newsroom* (the second group only for `story:any`) |
+| `GET /admin/noticias` | story list grouped by day; `story:any` sees the whole newsroom, anyone else only their own |
 | `POST /admin/noticias` | creates a draft and `303`-redirects to `/admin/noticias/<id>` |
 | `GET /admin/noticias/<id>` | the editor; `?idioma=<code>` selects which language row is being edited (default locale if absent or unknown) |
 | `POST /admin/noticias/<id>` | `accion=guardar\|publicar\|despublicar` (see [Newsroom write path](#newsroom-write-path)) |
@@ -524,7 +524,7 @@ only carries what is published.
 ```
 src/lib/markdown.ts                     Markdown → HTML, readingMinutes, slugify
 src/lib/newsroom/store.ts               the write accessors (own pool, max: 3)
-src/pages/admin/noticias/index.astro    the story list
+src/pages/admin/noticias/index.astro    the story list, grouped by day
 src/pages/admin/noticias/[id].astro     the editor: write, preview, publish, unpublish
 src/locales/markdown.test.mjs           the renderer's tests
 ```
@@ -598,6 +598,40 @@ the process rebuilds the snapshot and the story is on the home page, in
 invalidated. No rebuild, no restart, no cache to purge. Unpublishing travels the
 same path in reverse — the snapshot only loads `status='published'`, so the
 story leaves the site on the next refresh while its text stays in the database.
+
+### The two screens
+
+**The list (`index.astro`)** is one list, not two: `listStories()` is filtered to
+what the user may see (everything with `story:any`, their own otherwise) and then
+grouped by day with `groupByDay()` (see
+[Dates and days](#dates-and-days-srclibdatests)). Published stories group by
+`publishedAt`, drafts by `updatedAt` — the date that matters while a story is not
+out yet. Each day is a `<section>` headed by a sticky `h2` with the day label and
+the story count (`topics.count`).
+
+- A row is a **stretched link** to the editor (`.estirado::after { inset: 0 }`),
+  so the whole row opens the editor. A published row also carries a "ver en la
+  web" link, lifted above the stretched link with `position: relative; z-index: 1`
+  — one extra keyboard stop, not three identical ones. `.fila:hover:has(.accion:hover)`
+  drops the row's own highlight while the pointer is on that link, so the
+  highlight never promises the wrong destination.
+- `min-width: 0` on the title cell is load-bearing: without it a long headline
+  refuses to shrink and pushes the status and the action out of the row.
+- The author name is printed only on **other people's** stories.
+- Empty list → a panel with `admin.noticias.ninguna`, `admin.noticias.ninguna-ayuda`
+  and the "new story" button, instead of a bare "nothing here".
+
+**The editor (`[id].astro`)** is two columns above 940px: writing on the left
+(title, standfirst, body, preview) and a sticky decision rail on the right
+(topic, relevance, save; status, publish/unpublish, lead checkbox). Below 940px
+it collapses to one column with the rail **after** the text, which is the order
+in which the work happens.
+
+The publish and unpublish forms are **separate hidden `<form id="publicar">` /
+`<form id="despublicar">` elements** outside the editing form, and the rail's
+button and lead checkbox reach them through the HTML `form=` attribute. Nesting
+a `<form>` inside another is invalid HTML, and this is what keeps the rail
+working with **zero JavaScript**, like the rest of `/admin`.
 
 ### `src/lib/markdown.ts`
 
@@ -818,6 +852,9 @@ Two different things, and they live in two different places.
   **The confirmation email is copy too**: subject, greeting, body, CTA and the
   "ignore this" line are `mail.confirm.*` keys, not a template inside
   `mail.ts` — an email that only exists in Spanish is half a bilingual portal.
+  A day header follows the same split: «Hoy» / «Ayer» are chrome (`date.today`,
+  `date.yesterday`, resolved by `dayLabel()`), while an older day is a formatted
+  date and needs no key at all.
 - **Editorial content** — headlines, standfirsts, topic names, the author bio,
   market instrument names: `Localized` fields inside the content model. A
   headline is a row, not interface copy: it lives in `story_i18n` /
@@ -854,8 +891,9 @@ component counts as a dead file against the fleet budget).
 | `MarketBar.astro` | quote strip with arrow, signed %, and the sample/stale/delay notice | `locale` (data from `getMarket()`) |
 | `Search.astro` | header search dialog; fetches the locale's search index on first open | `locale` |
 | `Hero.astro` | lead story: topic tag, headline, standfirst, by-line | `locale`, `story: StoryView` |
-| `ArticleCard.astro` | one story card with a single stretched link | `locale`, `story: StoryView` |
+| `ArticleCard.astro` | one story card with a single stretched link; `fecha='hora'` prints only the time (inside a day-grouped list the date is already in the header), `'completa'` the full date | `locale`, `story: StoryView`, `fecha?: 'completa' \| 'hora'` |
 | `StoryGrid.astro` | responsive grid of `ArticleCard`, optionally preceded by a `.visually-hidden` `<h2>` | `locale`, `stories: StoryView[]`, `titulo?: string` |
+| `StoryDays.astro` | the same grid split into day groups: a sticky `<h2>` per day (label + count) over cards rendered with `fecha='hora'` | `locale`, `stories: StoryView[]` |
 | `NewsletterStrip.astro` | inverted band with the `POST /api/newsletter` form, its `role="status"` line and the consent note; posts JSON with `fetch` and prints the server's translated `message` | `locale` |
 | `AuthorBlock.astro` | home author panel: initials avatar, role, bio, story count | `locale`, `author: AuthorView`, `stories: number` |
 | `TopicList.astro` | topic tiles with icon, name and count | `locale`, `topics: TopicView[]` |
@@ -867,8 +905,12 @@ component counts as a dead file against the fleet budget).
 under the page title skips `h1 → h3` and whoever navigates by headings cannot
 tell whether a section was missed. That is what `titulo` is for: it renders a
 `.visually-hidden` `<h2>` above the card list (the visible page title already
-says it). `noticias.astro` and `tema/[slug].astro` pass it; a new listing page
-that forgets it fails `npm run gate:web`, which rejects any heading-level skip.
+says it). `tema/[slug].astro` passes it; `StoryDays` needs no `titulo` because
+its day headers already **are** visible `h2`s. A new listing page that skips a
+level fails `npm run gate:web`, which rejects any heading-level skip.
+
+The card's `<time datetime>` keeps the raw ISO/UTC timestamp whatever `fecha`
+prints: the visible text is for the reader, the attribute is for machines.
 
 `src/layouts/Layout.astro` wraps them: `<html lang dir>`, title/description,
 canonical, Open Graph, hreflang alternates + `x-default`, the display-font
@@ -890,6 +932,10 @@ preload, analytics and error-tracking snippets, header, `<main>`, footer.
   runtime's `fmtNumber` / `fmtDate`: `formatDate`, `formatTime`, `formatQuote`
   (per-instrument decimals), `formatPct` (`signDisplay: 'always'`),
   `directionOf` and `ARROW`. Never hand-roll a separator or a date string.
+  `formatDate` and `formatTime` pass `timeZone: ZONA` (`src/lib/dates.ts`), the
+  same zone the day grouping uses. Without it they rendered in the process's
+  zone — UTC inside the container — so a story grouped under "today" in Madrid
+  showed a time two hours behind: the same instant told with two clocks.
 - Direction is never color-only: the market bar ships an arrow, a signed
   percentage and a visually hidden `a11y.market.<up|down|flat>` label.
 - Astro traps this app already hit: a scoped `<style>` never matches nodes built
@@ -913,6 +959,36 @@ scripts/build-stamp.mjs
 
 `src/locales/config.json` and `brotea.json` are app **data** and may be edited —
 consistently and together (both carry `defaultLocale` and the locale list).
+
+### Dates and days (`src/lib/dates.ts`)
+
+Timestamps are stored in UTC, but **a day is always computed in the outlet's
+timezone**, never in the server's (UTC in a container) and never in the browser's
+(there is none: this is server rendering). Grouping in UTC puts a story
+published at 23:30 in Madrid under the following day, which splits today's front
+page in two for the desk that filed it.
+
+```ts
+export const ZONA = 'Europe/Madrid';           // the outlet's zone, as data
+
+dayKey('2026-08-06T22:30:00Z');                // '2026-08-07' (00:30 in Madrid)
+groupByDay(stories, (s) => s.publishedAt);     // [{ dia: '2026-08-07', items: [...] }, …]
+dayLabel(intlOf(locale), '2026-08-07', (k) => t(locale, k)); // 'Hoy' | 'Ayer' | 'sábado, 1 de agosto'
+```
+
+- `dayKey()` formats with `en-CA`, the one format that sorts the same as text
+  and as a date.
+- `groupByDay()` **preserves input order and only groups consecutive items**: it
+  never sorts. The caller already chose the order (newest first), and re-sorting
+  here would hide that decision in two places.
+- `dayLabel()` takes the resolved Intl tag and a `t()` function as arguments
+  instead of importing the catalog, so the module depends on nothing in the
+  project — which is what lets `node --test` load it. It formats
+  `<day>T12:00:00Z`, not midnight: from midnight UTC any western zone steps back
+  a day and the label contradicts the group it heads.
+
+Both `StoryDays.astro` (public) and `/admin/noticias` (newsroom) group through
+this module, so both screens cut the day at the same instant.
 
 ## Testing
 
@@ -943,11 +1019,22 @@ const { normalizeEmail } = await loadTs(new URL('../lib/newsletter/core.ts', imp
 
 **It only works for self-contained modules** (no relative imports) — which is
 exactly the constraint that keeps `newsletter/core.ts` free of Postgres and
-SMTP, and `markdown.ts` free of anything at all. `newsletter.test.mjs` covers
+SMTP, and `markdown.ts` and `dates.ts` free of anything at all. That is why
+`dayLabel()` receives its Intl tag and its `t()` instead of importing them.
+`newsletter.test.mjs` covers
 what cannot fail silently: what counts as an email, that the stored hash never
 reveals the token (and that a wrong-length hash returns `false` instead of
 throwing), the 72 h expiry versus the never-expiring unsubscribe link, and that
 the rate limiter limits per key and forgets outside its window.
+
+`dates.test.mjs` covers where off-by-one-day bugs live, with real boundary hours
+instead of comfortable middays: 23:30 and 00:30 Madrid in **summer and winter**
+(the offset changes), that `groupByDay` groups consecutive items without
+reordering, that "today"/"yesterday" are decided against the same zone, and that
+an older label names the day it heads — the classic failure of formatting
+midnight UTC. It also asserts `ZONA === 'Europe/Madrid'` and that passing another
+zone yields another day, i.e. that the zone is a parameter and not a hardcoded
+assumption.
 
 `markdown.test.mjs` guards the only door through which HTML enters the portal, so
 half of it is injection attempts rather than pretty examples: `<script>` and

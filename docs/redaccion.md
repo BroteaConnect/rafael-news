@@ -30,13 +30,34 @@ es cosmética: quien escriba la URL a mano se encuentra un 403.
 
 `/admin/noticias` es el listado de la redacción, y enseña **todas** las
 noticias, no solo las publicadas: el sentido de esa pantalla son precisamente
-los borradores. Van separadas en «las mías» y «del resto de la redacción», y
-este segundo grupo solo lo ve quien puede editar lo de otros. Cada línea dice su
-estado con una palabra además de con un color, porque un borrador y una
-publicada no pueden distinguirse solo por un tono.
+los borradores. Es una sola lista **agrupada por días** —como la web—, porque la
+redacción piensa en jornadas: «¿qué hemos sacado hoy?». La cabecera de cada día
+(«Hoy», «Ayer» o la fecha escrita, con cuántas hay) se queda pegada arriba
+mientras se baja, así que nunca hay que subir para saber de qué día es lo que se
+está mirando. Las publicadas se agrupan por su fecha de publicación y los
+borradores por su última edición, que es la fecha que importa mientras no salen.
+Quien puede editar lo de otros ve toda la redacción; el resto, solo lo suyo, y
+el nombre del autor solo aparece cuando la noticia es de otra persona.
+
+La fila **entera** abre el editor: no hay que apuntar a un enlace pequeño. Una
+noticia publicada lleva además un «ver en la web» dentro de la fila, y al pasar
+por encima la fila apaga su propio resaltado para que quede claro que ese enlace
+lleva a otro sitio. Cada fila dice su estado con una palabra además de con un
+color, porque un borrador y una publicada no pueden distinguirse solo por un
+tono.
+
+Si no hay ninguna noticia todavía, la pantalla no se limita a decir que está
+vacía: explica que se puede guardar un borrador a medias y volver luego, y pone
+el botón de empezar.
 
 «Nueva noticia» crea el borrador y lleva directamente al editor,
-`/admin/noticias/<id>`, donde se hace todo:
+`/admin/noticias/<id>`. El editor son **dos columnas**: a la izquierda se
+escribe (titular, entradilla, cuerpo y la vista previa) y a la derecha se decide
+—tema, relevancia, guardar, el estado, publicar o retirar y el destacado— en una
+columna que también se queda pegada al bajar, para no tener que recorrer el
+cuerpo entero y la vista previa hasta el botón que más se usa. En pantalla
+estrecha queda todo en una columna y las decisiones van detrás del texto, que es
+el orden en el que se trabaja. Ahí se hace todo:
 
 - **Escribir**: titular, entradilla, tema, relevancia y cuerpo en markdown
   (`##` subtítulos, `**negrita**`, `*cursiva*`, listas, `>` cita, `[texto](enlace)`).
