@@ -17,14 +17,53 @@ ficha pública de autor: quien entra en una redacción viene a firmar.
 | | journalist | editor | owner |
 |---|---|---|---|
 | Editar su perfil público | ✅ | ✅ | ✅ |
-| Escribir y editar sus borradores (F6) | ✅ | ✅ | ✅ |
-| Editar lo de otros (F6) | — | ✅ | ✅ |
-| Publicar (F6) | — | ✅ | ✅ |
+| Escribir y editar sus borradores | ✅ | ✅ | ✅ |
+| Editar lo de otros | — | ✅ | ✅ |
+| Publicar y retirar de la web | — | ✅ | ✅ |
 | Invitar | — | — | ✅ |
 
-Los permisos se comprueban **en el servidor y por ruta**. Que un enlace no
-aparezca en el panel es cosmética: quien escriba la URL a mano se encuentra un
-403.
+Los permisos se comprueban **en el servidor**, y en las noticias contra la
+noticia concreta, no contra la pantalla. Que un enlace no aparezca en el panel
+es cosmética: quien escriba la URL a mano se encuentra un 403.
+
+## Escribir y publicar
+
+`/admin/noticias` es el listado de la redacción, y enseña **todas** las
+noticias, no solo las publicadas: el sentido de esa pantalla son precisamente
+los borradores. Van separadas en «las mías» y «del resto de la redacción», y
+este segundo grupo solo lo ve quien puede editar lo de otros. Cada línea dice su
+estado con una palabra además de con un color, porque un borrador y una
+publicada no pueden distinguirse solo por un tono.
+
+«Nueva noticia» crea el borrador y lleva directamente al editor,
+`/admin/noticias/<id>`, donde se hace todo:
+
+- **Escribir**: titular, entradilla, tema, relevancia y cuerpo en markdown
+  (`##` subtítulos, `**negrita**`, `*cursiva*`, listas, `>` cita, `[texto](enlace)`).
+  El HTML que se escriba se escapa y se ve como texto: no hay forma de meter
+  código en una noticia. Todavía no hay imágenes.
+- **Un idioma cada vez**: la barra de idiomas cambia qué versión se está
+  editando. Cada idioma es su propia fila, así que escribir la versión en inglés
+  no pisa la española.
+- **Ver cómo queda**: la vista previa usa el MISMO renderizado que se guarda, no
+  una aproximación.
+- **Publicar**: solo un editor o el responsable. La dirección de la noticia se
+  calcula del titular en español **al publicar**, y republicar no la mueve: una
+  URL que cambia después de compartida es un enlace roto. Sin titular no se
+  publica, y si otra noticia ya tiene esa dirección se avisa en vez de inventar
+  un número al final. Se puede marcar como noticia principal del día; el
+  destacado anterior deja de serlo solo.
+- **Retirar de la web**: vuelve a borrador y desaparece del portal al instante.
+  **No borra nada** — retirar una noticia y perderla son cosas distintas.
+
+Publicar se nota en la portada sin reconstruir ni reiniciar nada: se guarda en
+las mismas tablas que lee la web, y el aviso de la base de datos refresca la
+instantánea (los detalles, en
+[architecture.md](./architecture.md#newsroom-write-path)).
+
+Guardar lo hace quien haya pasado la comprobación de la noticia; publicar y
+retirar exigen permiso, y sin él la acción no se ejecuta en silencio: la página
+dice que no se puede.
 
 ## El primer responsable (arranque)
 

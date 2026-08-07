@@ -4,9 +4,12 @@ Brotea News is an Astro app with `output: 'server'` (node adapter, standalone):
 **every route is rendered per request**, no page opts into prerendering.
 Editorial content lives in Postgres, but a request never queries it: pages read
 an in-memory snapshot behind async accessors (see [Content layer](#content-layer)).
-The exception is the newsletter, which writes and reads its own table per
-request (see [Newsletter](#newsletter-double-opt-in)) — no reader waits on
-Postgres to see a story, only to subscribe.
+The exceptions are the two write sides: the newsletter, which writes and reads
+its own table per request (see [Newsletter](#newsletter-double-opt-in)), and the
+newsroom under `/admin`, which queries Postgres directly because drafts are
+precisely what the snapshot does not carry (see
+[Newsroom write path](#newsroom-write-path)). No reader waits on Postgres to see
+a story.
 Runtime and packaging live in [deployment.md](./deployment.md).
 
 ## Routes
@@ -42,6 +45,19 @@ Locale-agnostic endpoints (no language prefix):
 Both feeds are built from the snapshot, so a story enters `/rss.xml` and
 `/sitemap.xml` the moment it enters the home page — no scheduled job. Absolute
 URLs come from `site` in `astro.config.mjs`.
+
+The newsroom lives under `/admin`, always in the default locale and with no
+language prefix. Every route there needs a session and every `POST` a CSRF field
+(`src/middleware.ts`; access and roles are in [redaccion.md](./redaccion.md)),
+and every `/admin` response ships `Cache-Control: no-store` and
+`X-Robots-Tag: noindex, nofollow`. The story routes:
+
+| Route | Behaviour |
+| --- | --- |
+| `GET /admin/noticias` | story list, split into *mine* and *the rest of the newsroom* (the second group only for `story:any`) |
+| `POST /admin/noticias` | creates a draft and `303`-redirects to `/admin/noticias/<id>` |
+| `GET /admin/noticias/<id>` | the editor; `?idioma=<code>` selects which language row is being edited (default locale if absent or unknown) |
+| `POST /admin/noticias/<id>` | `accion=guardar\|publicar\|despublicar` (see [Newsroom write path](#newsroom-write-path)) |
 
 Language resolution in every page is `resolveLocale(Astro.params.lang)` from
 `src/lib/route.ts`: no prefix → default locale, a published locale → that
@@ -123,9 +139,12 @@ not in a `jsonb` column, so editing one language never overwrites another.
   drafts and scheduled stories are invisible to readers.
 - A partial unique index (`stories_one_lead ... WHERE lead AND status='published'`)
   makes two lead stories impossible.
-- `body_html` is stored already rendered and sanitised; templates print it with
-  `<Fragment set:html>`. A story without `body_html` renders the
-  `article.body-pending` copy instead of an invented text.
+- `body_md` is what the newsroom typed (the editor loads it back to keep
+  writing); `body_html` is the render of that Markdown, written by `saveStory()`
+  and never by hand. Templates print `body_html` with `<Fragment set:html>` — it
+  is stored already escaped and rendered, so no template is responsible for
+  sanitising ([Newsroom write path](#newsroom-write-path)). A story without
+  `body_html` renders the `article.body-pending` copy instead of an invented text.
 
 ### Snapshot and invalidation
 
@@ -225,6 +244,137 @@ Rules:
   plain JSON (so the node test can read it without Vite) and only `db.ts` and
   `snapshot.ts` import it — as the cold-start fallback and as the rows loaded on
   first run.
+
+## Newsroom write path
+
+The write side of the same tables the snapshot reads. It is not behind the
+accessors on purpose: the point of these screens is the drafts, and the snapshot
+only carries what is published.
+
+```
+src/lib/markdown.ts                     Markdown → HTML, readingMinutes, slugify
+src/lib/newsroom/store.ts               the write accessors (own pool, max: 3)
+src/pages/admin/noticias/index.astro    the story list
+src/pages/admin/noticias/[id].astro     the editor: write, preview, publish, unpublish
+src/locales/markdown.test.mjs           the renderer's tests
+```
+
+```mermaid
+graph LR
+  W[Newsroom] -->|saveStory| MD[markdown.ts]
+  MD -->|body_md + body_html| DB[(Postgres)]
+  W -->|publish| DB
+  DB -. trigger + NOTIFY .-> S[(in-memory snapshot)]
+  S --> R[Reader]
+```
+
+Its own pool (`max: 3`), like the newsletter's: writing must never contend with
+the content layer's connections.
+
+### Permissions
+
+Checked against the **specific story**, not against the screen — a link that is
+not painted is cosmetics, and the id is in the URL:
+
+- `[id].astro` loads the draft first. An unknown id is `Astro.rewrite('/404')`,
+  like any public page.
+- Then `draft.authorId === user.authorId` → allowed; otherwise
+  `can(role, 'story:any')` (editor, owner) or a bare `403`.
+- `accion=guardar` needs nothing more: whoever passed that check edits the text.
+- `accion=publicar` / `accion=despublicar` need `story:publish` (editor, owner).
+  Without it the action is not silently skipped: the page answers with the
+  `admin.noticias.sin-permiso` notice.
+- Creating a draft is open to every role — a journalist starting a story is not
+  a privileged act. The row is inserted with the user's `authorId`, which exists
+  because accepting an invitation creates the public author record too
+  ([redaccion.md](./redaccion.md)).
+
+### `src/lib/newsroom/store.ts`
+
+| Function | Returns / failure modes |
+| --- | --- |
+| `listStories(locale)` | `StoryRow[]` — **every** story, any status, ordered by `COALESCE(published_at, updated_at) DESC`. `LEFT JOIN`s with fallbacks (`(sin título)`, empty author name) so a barely-started draft still lists instead of disappearing |
+| `getDraft(id)` | `StoryDraft \| null` — the row plus one `i18n` entry per existing locale row, carrying `bodyMd` (the Markdown source, never the HTML) |
+| `createStory(authorId, topicId)` | the new id, `st-<base36 time>-<base36 random>`, inserted as `draft` with `slug = id` and `reading_minutes = 1`. A timestamped id sorts by itself and does not depend on a headline, which changes a lot before publication |
+| `saveStory(input)` | `void`. One transaction: `stories` (topic, relevance, `reading_minutes`, `updated_at`) plus an upsert of one `story_i18n` row (title, standfirst, `body_md`, `body_html`). It renders the Markdown itself; it never publishes and never touches the slug. `reading_minutes` is recomputed from the body just saved |
+| `publish(id, defaultLocale, lead)` | `'ok' \| 'sin-titulo' \| 'slug-repetido'` — the two failures write nothing |
+| `unpublish(id)` | `void`: `status='draft'`, `lead=false`. **Deletes nothing** — pulling a story and losing it are different things |
+
+Saving edits one language at a time (`?idioma=<code>`), which is what the
+`story_i18n` rows-per-locale model is for: writing the English version cannot
+overwrite the Spanish one.
+
+### Publishing
+
+- The slug is computed **at publish time**, from the default-locale title
+  (`slugify`, 80 chars max, the id as fallback if the title slugifies to
+  nothing). Never while drafting: the headline changes ten times, and a URL that
+  moves after publication is a broken link for whoever shared it.
+- An already-published story **keeps its slug** when republished.
+- No default-locale title → `'sin-titulo'`; the page says a headline is needed.
+- Another story already holds that slug → `'slug-repetido'`. It is not resolved
+  by appending a number: two identical headlines are a decision for the desk.
+- `published_at = COALESCE(published_at, now())` — republishing does not re-date
+  a story.
+- With `lead`, the previous lead is demoted **inside the same transaction and
+  before** the promotion: `stories_one_lead` is a partial unique index, so doing
+  it the other way round aborts the transaction.
+
+The story reaches the reader through the machinery already described in
+[Snapshot and invalidation](#snapshot-and-invalidation): the `UPDATE` fires
+`bump_content_version()`, which bumps the version and `pg_notify`s `contenido`;
+the process rebuilds the snapshot and the story is on the home page, in
+`/rss.xml`, `/sitemap.xml` and the search index, with every ETag already
+invalidated. No rebuild, no restart, no cache to purge. Unpublishing travels the
+same path in reverse — the snapshot only loads `status='published'`, so the
+story leaves the site on the next refresh while its text stays in the database.
+
+### `src/lib/markdown.ts`
+
+Markdown is rendered **when the story is saved**, not when it is read, and the
+result is stored in `body_html`. That leaves a single door through which HTML
+enters the system, instead of trusting every template to escape.
+
+The renderer is hand-written rather than a parser plus a sanitiser, and the
+ordering is the security property: **escape first, emit after**. Author text is
+escaped (`& < > " '`) on the way in, and only the tags in the table below are
+emitted afterwards, so unescaped author HTML never exists at any point — which
+is exactly where "parse, then sanitise" chains fail. The price is a reduced
+subset of Markdown.
+
+| Input | Output |
+| --- | --- |
+| `## …` to `#### …` | `<h2>`–`<h4>`. **No `<h1>` is ever emitted**: the page's h1 is the headline, and two h1s break the heading outline for a screen reader. A lone `#` stays a paragraph |
+| `**bold**`, `*italic*` | `<strong>`, `<em>` |
+| `` `code` `` | `<code>`; extracted before anything else so its contents are not re-interpreted as emphasis |
+| `- item`, `1. item` | `<ul>`, `<ol>` |
+| `> quote` | `<blockquote><p>…</p></blockquote>` |
+| `[text](url)` | `<a href="…">` if the URL passes `safeHref`, else the plain text |
+| anything else | `<p>`; consecutive lines join with a space, a blank line closes the paragraph |
+
+`safeHref` allows `http:`, `https:`, `mailto:` and site-relative `/path` only
+(`//host` is another origin and is rejected). It matches with whitespace and
+hyphens collapsed and lower-cased, so `javascript:`, `JaVaScRiPt:`,
+`java script:`, `data:` and `vbscript:` all fail. **A rejected link keeps its
+text and loses the anchor** — the reader sees the words, not a dead or dangerous
+href. External `http(s)` links get `rel="noopener nofollow"`.
+
+Current limits, stated as limits: no images (the renderer emits no `<img>` and
+the editor has no image field), no tables, and no raw HTML — author markup is
+escaped and shown as text.
+
+Also exported: `readingMinutes(source)` (200 words per minute, never below 1,
+because "0 min read" means nothing) and `slugify(title)` (lower-case, accents
+stripped via NFD, non-alphanumerics collapsed to `-`, trimmed, 80 chars).
+
+The editor's preview calls the very same `renderMarkdown`, so what the desk sees
+before publishing is the render that gets stored, not an approximation.
+
+The topic dropdown is filled from `getTopics(locale)`, i.e. from the content
+snapshot: a topic name is editorial content, not UI copy, so it is never a `t()`
+key. The newsroom's own chrome (`admin.noticias.*`) is UI copy and lives in both
+locale files; its status family is declared in the `DYNAMIC` map of
+`content.test.mjs` because the editor builds those keys from a template.
 
 ## Newsletter (double opt-in)
 
@@ -491,11 +641,18 @@ const { normalizeEmail } = await loadTs(new URL('../lib/newsletter/core.ts', imp
 
 **It only works for self-contained modules** (no relative imports) — which is
 exactly the constraint that keeps `newsletter/core.ts` free of Postgres and
-SMTP. `newsletter.test.mjs` covers what cannot fail silently: what counts as an
-email, that the stored hash never reveals the token (and that a wrong-length
-hash returns `false` instead of throwing), the 72 h expiry versus the
-never-expiring unsubscribe link, and that the rate limiter limits per key and
-forgets outside its window.
+SMTP, and `markdown.ts` free of anything at all. `newsletter.test.mjs` covers
+what cannot fail silently: what counts as an email, that the stored hash never
+reveals the token (and that a wrong-length hash returns `false` instead of
+throwing), the 72 h expiry versus the never-expiring unsubscribe link, and that
+the rate limiter limits per key and forgets outside its window.
+
+`markdown.test.mjs` guards the only door through which HTML enters the portal, so
+half of it is injection attempts rather than pretty examples: `<script>` and
+`onerror=` escaped to text, `javascript:` / `data:` / `vbscript:` and the
+`java script:` trick producing no `href`, quotes inside link text not breaking
+out of the attribute, headings never reaching `h1`, and empty or `null` input not
+throwing. A renderer that fails here does not raise an error — it opens a hole.
 
 Neither `npm test` nor CI needs a database or an SMTP server: without
 `DATABASE_URL` the app serves the seed, which is also how `npm run dev` works
