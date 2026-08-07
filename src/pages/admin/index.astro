@@ -9,6 +9,7 @@ const locale = DEFAULT_LOCALE;
 const user = Astro.locals.user!;
 
 const ACCIONES = [
+  { href: '/admin/noticias', key: 'admin.acc.noticias', permiso: 'story:own' },
   { href: '/admin/perfil', key: 'admin.acc.perfil', permiso: 'profile:own' },
   { href: '/admin/invitar', key: 'admin.acc.invitar', permiso: 'user:invite' },
 ];
@@ -24,9 +25,6 @@ const ACCIONES = [
     ))}
   </ul>
 
-  {/* Escribir noticias llega en F6. Decirlo aquí evita que alguien busque el
-      botón durante diez minutos convencido de que se le escapa. */}
-  <p class="pendiente">{t(locale, 'admin.pendiente-contenido')}</p>
 </Admin>
 
 <style>
