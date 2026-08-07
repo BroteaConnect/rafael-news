@@ -8,7 +8,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "test": "node scripts/build-stamp.mjs && node --test src/locales/*.test.mjs && astro check && astro build",
-    "prebuild": "node scripts/build-stamp.mjs"
+    "prebuild": "node scripts/build-stamp.mjs",
+    "gate:web": "node scripts/gate-web.mjs"
   },
   "dependencies": {
     "astro": "^5.0.0",
