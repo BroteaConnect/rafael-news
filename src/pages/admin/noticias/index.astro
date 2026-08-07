@@ -1,0 +1,88 @@
+---
+import Admin from '../../../layouts/Admin.astro';
+import { CSRF_COOKIE, can } from '../../../lib/auth/core';
+import { createStory, listStories } from '../../../lib/newsroom/store';
+import { DEFAULT_LOCALE, t } from '../../../lib/i18n';
+import { TOPICS } from '../../../lib/content/types';
+
+export const prerender = false;
+const locale = DEFAULT_LOCALE;
+const user = Astro.locals.user!;
+
+if (Astro.request.method === 'POST') {
+  // Crear siempre está permitido: cualquiera de la redacción puede empezar un
+  // borrador. Lo que exige permiso es publicarlo o tocar el de otro.
+  const id = await createStory(user.authorId ?? '', TOPICS[0]!);
+  return Astro.redirect(`/admin/noticias/${id}`, 303);
+}
+
+const stories = await listStories(locale);
+const mias = stories.filter((s) => s.authorId === user.authorId);
+const otras = stories.filter((s) => s.authorId !== user.authorId);
+const puedeVerTodas = can(user.role, 'story:any');
+const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
+
+const ESTADO = {
+  draft: 'admin.noticias.borrador', scheduled: 'admin.noticias.programada',
+  published: 'admin.noticias.publicada', archived: 'admin.noticias.archivada',
+} as const;
+---
+
+<Admin title={t(locale, 'admin.noticias.title')} user={user}>
+  <div class="cabecera">
+    <h1>{t(locale, 'admin.noticias.title')}</h1>
+    <form method="post">
+      <input type="hidden" name="csrf" value={csrf} />
+      <button class="btn" type="submit">{t(locale, 'admin.noticias.nueva')}</button>
+    </form>
+  </div>
+
+  <h2 class="grupo">{t(locale, 'admin.noticias.mias')}</h2>
+  {mias.length === 0 && <p class="vacio">{t(locale, 'admin.noticias.ninguna')}</p>}
+  <ul class="lista">
+    {mias.map((s) => (
+      <li>
+        <a href={`/admin/noticias/${s.id}`}>{s.title}</a>
+        <span class={`estado ${s.status}`}>{t(locale, ESTADO[s.status])}</span>
+        {s.lead && <span class="destacada">{t(locale, 'admin.noticias.destacada')}</span>}
+      </li>
+    ))}
+  </ul>
+
+  {puedeVerTodas && otras.length > 0 && (
+    <>
+      <h2 class="grupo">{t(locale, 'admin.noticias.otras')}</h2>
+      <ul class="lista">
+        {otras.map((s) => (
+          <li>
+            <a href={`/admin/noticias/${s.id}`}>{s.title}</a>
+            <span class="autor">{s.authorName}</span>
+            <span class={`estado ${s.status}`}>{t(locale, ESTADO[s.status])}</span>
+            {s.lead && <span class="destacada">{t(locale, 'admin.noticias.destacada')}</span>}
+          </li>
+        ))}
+      </ul>
+    </>
+  )}
+</Admin>
+
+<style>
+  .cabecera { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
+  h1 { font-size: 1.75rem; }
+  .grupo { font-family: var(--font-sans); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-block: var(--space-5) var(--space-3); }
+  .vacio { color: var(--muted); }
+  .lista { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+  .lista li {
+    display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+    padding: var(--space-3); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .lista a { color: var(--text); text-decoration: none; font-family: var(--font-display); font-size: 1.0625rem; flex: 1; }
+  .lista a:hover { color: var(--primary); }
+  .autor { color: var(--muted); font-size: 0.8125rem; }
+  /* El estado se distingue por PALABRA además de por color: un borrador y una
+   * publicada no se pueden diferenciar solo por un tono. */
+  .estado { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .estado.published { color: var(--ok-strong); font-weight: 700; }
+  .destacada { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--primary); font-weight: 700; }
+</style>

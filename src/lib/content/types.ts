@@ -15,6 +15,11 @@ export type Localized = Record<Locale, string>;
 
 export type TopicId = 'macro' | 'markets' | 'crypto' | 'fx';
 
+/** Los temas como VALOR, para los desplegables de la redacción. `satisfies`
+ *  hace que añadir un tema al tipo y olvidarse de esta lista sea un error de
+ *  compilación, no un desplegable incompleto que nadie nota. */
+export const TOPICS = ['macro', 'markets', 'crypto', 'fx'] as const satisfies readonly TopicId[];
+
 /** Cuánto pesa la noticia en la portada del día. */
 export type Relevance = 'high' | 'medium' | 'low';
 

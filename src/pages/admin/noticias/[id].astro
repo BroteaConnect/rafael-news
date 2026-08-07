@@ -1,0 +1,189 @@
+---
+import Admin from '../../../layouts/Admin.astro';
+import { CSRF_COOKIE, can } from '../../../lib/auth/core';
+import { getDraft, publish, saveStory, unpublish } from '../../../lib/newsroom/store';
+import { renderMarkdown } from '../../../lib/markdown';
+import { TOPICS } from '../../../lib/content/types';
+import { getTopics } from '../../../lib/content/store';
+import { DEFAULT_LOCALE, LOCALES, localePath, t } from '../../../lib/i18n';
+
+export const prerender = false;
+const locale = DEFAULT_LOCALE;
+const user = Astro.locals.user!;
+const id = String(Astro.params.id ?? '');
+
+let draft = await getDraft(id);
+if (!draft) return Astro.rewrite('/404');
+
+// El permiso se comprueba contra la noticia CONCRETA, no contra la pantalla:
+// un periodista edita lo suyo, un editor lo de cualquiera.
+const esSuya = draft.authorId === user.authorId;
+if (!esSuya && !can(user.role, 'story:any')) return new Response(null, { status: 403 });
+const puedePublicar = can(user.role, 'story:publish');
+
+const editando = Astro.url.searchParams.get('idioma');
+const idioma = LOCALES.includes(editando ?? '') ? String(editando) : DEFAULT_LOCALE;
+
+let aviso: string | null = null;
+let error: string | null = null;
+
+if (Astro.request.method === 'POST') {
+  const form = Astro.locals.form!;
+  const accion = String(form.get('accion') ?? 'guardar');
+
+  if (accion === 'guardar') {
+    await saveStory({
+      id,
+      locale: idioma,
+      title: String(form.get('titulo') ?? '').trim(),
+      standfirst: String(form.get('entradilla') ?? '').trim(),
+      bodyMd: String(form.get('cuerpo') ?? ''),
+      topicId: (TOPICS.includes(String(form.get('tema')) as never)
+        ? String(form.get('tema')) : TOPICS[0]) as never,
+      relevance: (['high', 'medium', 'low'].includes(String(form.get('relevancia')))
+        ? String(form.get('relevancia')) : 'medium') as never,
+    });
+    aviso = t(locale, 'admin.noticias.guardada');
+  } else if (accion === 'publicar' && puedePublicar) {
+    const result = await publish(id, DEFAULT_LOCALE, form.get('destacada') === 'si');
+    if (result === 'ok') aviso = t(locale, 'admin.noticias.publicada-ok');
+    else if (result === 'sin-titulo') error = t(locale, 'admin.noticias.sin-titulo');
+    else error = t(locale, 'admin.noticias.slug-repetido');
+  } else if (accion === 'despublicar' && puedePublicar) {
+    await unpublish(id);
+    aviso = t(locale, 'admin.noticias.despublicada');
+  } else if (!puedePublicar) {
+    // Sin el permiso, la acción no se ejecuta ni en silencio ni «por si acaso»:
+    // se dice que no se puede.
+    error = t(locale, 'admin.noticias.sin-permiso');
+  }
+  draft = (await getDraft(id))!;
+}
+
+const temas = await getTopics(idioma);
+const texto = draft.i18n[idioma] ?? { title: '', standfirst: '', bodyMd: '' };
+const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
+const vistaPrevia = renderMarkdown(texto.bodyMd);
+---
+
+<Admin title={texto.title || t(locale, 'admin.noticias.nueva')} user={user}>
+  <p class="volver"><a href="/admin/noticias">← {t(locale, 'admin.noticias.title')}</a></p>
+
+  {aviso && <p class="ok" role="status">{aviso}</p>}
+  {error && <p class="error" role="alert">{error}</p>}
+
+  <nav class="idiomas" aria-label={t(locale, 'admin.perfil.idiomas')}>
+    {LOCALES.map((code) => (
+      <a href={`/admin/noticias/${id}?idioma=${code}`} aria-current={code === idioma ? 'page' : undefined}>{code}</a>
+    ))}
+  </nav>
+
+  <form method="post" class="formulario">
+    <input type="hidden" name="csrf" value={csrf} />
+    <input type="hidden" name="accion" value="guardar" />
+    <label>
+      {t(locale, 'admin.noticias.titular')}
+      <input type="text" name="titulo" maxlength="200" value={texto.title} />
+    </label>
+    <label>
+      {t(locale, 'admin.noticias.entradilla')}
+      <textarea name="entradilla" rows="2" maxlength="400">{texto.standfirst}</textarea>
+    </label>
+    <div class="fila">
+      <label>
+        {t(locale, 'admin.noticias.tema')}
+        <select name="tema">
+          {temas.map((tp) => <option value={tp.id} selected={tp.id === draft.topicId}>{tp.name}</option>)}
+        </select>
+      </label>
+      <label>
+        {t(locale, 'admin.noticias.relevancia')}
+        <select name="relevancia">
+          {['high', 'medium', 'low'].map((r) => (
+            <option value={r} selected={r === draft.relevance}>{t(locale, `relevance.${r}`)}</option>
+          ))}
+        </select>
+      </label>
+    </div>
+    <label>
+      {t(locale, 'admin.noticias.cuerpo')}
+      <textarea name="cuerpo" rows="18">{texto.bodyMd}</textarea>
+      <small>{t(locale, 'admin.noticias.ayuda-markdown')}</small>
+    </label>
+    <button class="btn" type="submit">{t(locale, 'admin.noticias.guardar')}</button>
+  </form>
+
+  {/* Vista previa del cuerpo tal y como lo verá el lector: es el MISMO
+      renderizado que se guarda, no una aproximación. */}
+  <section class="previa" aria-labelledby="previa-title">
+    <h2 id="previa-title" class="grupo">{t(locale, 'admin.noticias.previa')}</h2>
+    {vistaPrevia
+      ? <div class="cuerpo" set:html={vistaPrevia} />
+      : <p class="vacio">{t(locale, 'admin.noticias.previa-vacia')}</p>}
+  </section>
+
+  <section class="publicacion" aria-labelledby="pub-title">
+    <h2 id="pub-title" class="grupo">{t(locale, 'admin.noticias.publicacion')}</h2>
+    <p class="estado-actual">
+      {t(locale, `admin.noticias.${draft.status === 'published' ? 'publicada' : 'borrador'}`)}
+      {draft.status === 'published' && (
+        <a class="ver" href={localePath(DEFAULT_LOCALE, `/noticia/${draft.slug}`)}>{t(locale, 'admin.noticias.ver')}</a>
+      )}
+    </p>
+    {puedePublicar ? (
+      <div class="acciones">
+        {draft.status !== 'published' ? (
+          <form method="post">
+            <input type="hidden" name="csrf" value={csrf} />
+            <input type="hidden" name="accion" value="publicar" />
+            <label class="check">
+              <input type="checkbox" name="destacada" value="si" checked={draft.lead} />
+              {t(locale, 'admin.noticias.marcar-destacada')}
+            </label>
+            <button class="btn" type="submit">{t(locale, 'admin.noticias.publicar')}</button>
+          </form>
+        ) : (
+          <form method="post">
+            <input type="hidden" name="csrf" value={csrf} />
+            <input type="hidden" name="accion" value="despublicar" />
+            <button class="btn btn-ghost" type="submit">{t(locale, 'admin.noticias.despublicar')}</button>
+          </form>
+        )}
+      </div>
+    ) : (
+      <p class="vacio">{t(locale, 'admin.noticias.solo-editor')}</p>
+    )}
+  </section>
+</Admin>
+
+<style>
+  .volver { margin-block-end: var(--space-3); }
+  .volver a { color: var(--muted); text-decoration: none; }
+  .idiomas { display: flex; gap: var(--space-2); margin-block-end: var(--space-4); }
+  .idiomas a {
+    padding: var(--space-1) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text); text-decoration: none; text-transform: uppercase; font-size: 0.8125rem; font-weight: 600;
+  }
+  .idiomas a[aria-current='page'] { background: var(--primary); color: var(--primary-contrast); border-color: var(--primary); }
+  .formulario { display: grid; gap: var(--space-3); }
+  .fila { display: grid; gap: var(--space-3); grid-template-columns: 1fr 1fr; }
+  label { display: grid; gap: var(--space-1); font-size: 0.9375rem; }
+  input[type='text'], textarea, select {
+    padding: var(--space-2) var(--space-3); font: inherit; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  input[type='text'], select { min-height: 44px; }
+  textarea[name='cuerpo'] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9375rem; line-height: 1.6; }
+  small { color: var(--muted); }
+  .grupo { font-family: var(--font-sans); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-block: var(--space-5) var(--space-3); }
+  .previa .cuerpo { max-width: var(--measure); padding: var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+  .previa .cuerpo :global(p) { margin-block: 0 var(--space-3); }
+  .previa .cuerpo :global(h2), .previa .cuerpo :global(h3) { font-size: 1.25rem; margin-block: var(--space-4) var(--space-2); }
+  .previa .cuerpo :global(blockquote) { margin: var(--space-3) 0; padding-inline-start: var(--space-3); border-inline-start: 3px solid var(--primary); color: var(--muted); }
+  .vacio { color: var(--muted); }
+  .acciones { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; }
+  .check { display: flex; flex-direction: row; align-items: center; gap: var(--space-2); margin-block-end: var(--space-2); }
+  .estado-actual { display: flex; gap: var(--space-3); align-items: center; }
+  .ok { padding: var(--space-3); border: 1px solid var(--ok-strong); border-radius: var(--radius); color: var(--ok-strong); }
+  .error { padding: var(--space-3); border: 1px solid var(--danger-strong); border-radius: var(--radius); color: var(--danger-strong); }
+</style>
