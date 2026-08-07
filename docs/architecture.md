@@ -195,6 +195,11 @@ curl -sI -H "If-None-Match: $etag" localhost:4321/ | head -1
 # HTTP/1.1 304 Not Modified
 ```
 
+These headers are **enforced, not conventional**: `npm run gate:web` requests
+every public page and fails if the response lacks `s-maxage` or `ETag`, if
+`/admin/entrar` is not `no-store` + `noindex`, or if `/healthz` carries an
+`ETag` (see [gate-web.md](./gate-web.md)).
+
 ### Contract
 
 `src/lib/content/types.ts` — types only:
@@ -850,12 +855,20 @@ component counts as a dead file against the fleet budget).
 | `Search.astro` | header search dialog; fetches the locale's search index on first open | `locale` |
 | `Hero.astro` | lead story: topic tag, headline, standfirst, by-line | `locale`, `story: StoryView` |
 | `ArticleCard.astro` | one story card with a single stretched link | `locale`, `story: StoryView` |
-| `StoryGrid.astro` | responsive grid of `ArticleCard` | `locale`, `stories: StoryView[]` |
+| `StoryGrid.astro` | responsive grid of `ArticleCard`, optionally preceded by a `.visually-hidden` `<h2>` | `locale`, `stories: StoryView[]`, `titulo?: string` |
 | `NewsletterStrip.astro` | inverted band with the `POST /api/newsletter` form, its `role="status"` line and the consent note; posts JSON with `fetch` and prints the server's translated `message` | `locale` |
 | `AuthorBlock.astro` | home author panel: initials avatar, role, bio, story count | `locale`, `author: AuthorView`, `stories: number` |
 | `TopicList.astro` | topic tiles with icon, name and count | `locale`, `topics: TopicView[]` |
 | `SiteFooter.astro` | legal links, language switcher, disclaimer, copyright, "powered by brotea" | `locale` |
 | `LanguageSwitcher.astro` | locale links (**generated file**, do not edit) | `locale` |
+
+**Heading levels on a listing page: `h1` page title → hidden `h2` section →
+`h3` cards.** `ArticleCard` titles are `h3`, so a `StoryGrid` dropped straight
+under the page title skips `h1 → h3` and whoever navigates by headings cannot
+tell whether a section was missed. That is what `titulo` is for: it renders a
+`.visually-hidden` `<h2>` above the card list (the visible page title already
+says it). `noticias.astro` and `tema/[slug].astro` pass it; a new listing page
+that forgets it fails `npm run gate:web`, which rejects any heading-level skip.
 
 `src/layouts/Layout.astro` wraps them: `<html lang dir>`, title/description,
 canonical, Open Graph, hreflang alternates + `x-default`, the display-font
@@ -949,3 +962,27 @@ locally.
 
 Green `npm test` proves nothing about the runtime — the image is built, run and
 curled by the docker CI job (see [deployment.md](./deployment.md)).
+
+### The web gate
+
+```bash
+npm run build && npm run gate:web
+```
+
+`npm test` proves the app compiles, translates and builds; it never looks at what
+the built server actually answers. `npm run gate:web` (`scripts/gate-web.mjs`)
+does: it **needs `dist/` to exist**, spawns `node ./dist/server/entry.mjs` on
+`127.0.0.1:41999` (`GATE_PORT` overrides it) with `DATABASE_URL` blanked so the
+run measures the seed and not that day's publications, and then asks it over
+HTTP for the gzipped weight of each page's HTML, inline+linked JS and CSS
+against fixed budgets, the cache headers, and the structural accessibility rules
+(one `h1`, no heading-level skips, `alt`, labelled controls). Exit `0` when
+everything passes, `1` with every problem listed. It deliberately measures no
+LCP/CLS — a timing measurement on a shared runner is noisy, and a
+randomly-failing gate gets ignored. Full detail, budgets included, in
+[gate-web.md](./gate-web.md).
+
+It runs in **its own workflow**, `.github/workflows/calidad-web.yml` (checkout →
+node 22 → `npm ci` → `npm run build` → `npm run gate:web`), not in `ci.yml`:
+`ci.yml` is materialised by the factory catalog and any step added there is lost
+on the next fleet migration.

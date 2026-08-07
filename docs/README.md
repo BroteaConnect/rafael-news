@@ -24,4 +24,13 @@ Documentation for Brotea News, the server-rendered Astro portal.
   (`001_content`, `002_newsletter`), the `runtime` service contract in
   `brotea.json` that CI and Coolify both read, the Coolify configuration
   (dockerfile build pack, port 4321, `is_static=false`), the URL and caching
-  scheme, and the release process with green CI as the only gate.
+  scheme, and the release process with its two required workflows.
+- [gate-web.md](./gate-web.md) *(in Spanish)* — `npm run gate:web`, the speed and
+  accessibility gate that fails a PR from its own workflow
+  (`.github/workflows/calidad-web.yml`): it boots the built server without
+  `DATABASE_URL` and asks it over HTTP for the gzipped HTML/JS/CSS weight of four
+  pages against fixed budgets, `s-maxage` + `ETag` on public pages, `no-store` +
+  `noindex` on `/admin`, no `ETag` on `/healthz`, one `h1` with no heading-level
+  skips, `alt` on images, a label on every control, and that the home page
+  references nothing from `/admin` — plus what it deliberately does not measure
+  (LCP, CLS, anything needing a real browser).
