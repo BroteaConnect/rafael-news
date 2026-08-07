@@ -18,7 +18,7 @@ const stories = await getStoriesByTopic(topic.id, locale);
   <section class="section container" aria-labelledby="topic-title">
     <h1 class="page-title" id="topic-title">{topic.name}</h1>
     <p class="lede">{t(locale, 'topics.count', { count: topic.count })}</p>
-    <StoryGrid locale={locale} stories={stories} />
+    <StoryGrid locale={locale} stories={stories} titulo={topic.name} />
   </section>
 </Layout>
 

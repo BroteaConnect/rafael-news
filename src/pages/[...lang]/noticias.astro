@@ -15,7 +15,7 @@ const stories = await getArticles(locale);
   <section class="section container" aria-labelledby="news-title">
     <h1 class="page-title" id="news-title">{t(locale, 'nav.news')}</h1>
     <p class="lede">{t(locale, 'news.description')}</p>
-    <StoryGrid locale={locale} stories={stories} />
+    <StoryGrid locale={locale} stories={stories} titulo={t(locale, 'nav.news')} />
   </section>
 </Layout>
 
