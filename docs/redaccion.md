@@ -1,76 +1,109 @@
-# The newsroom: access, roles and bootstrap
+# La redacción: acceso, roles y arranque
 
-`/admin` is the private half of the portal. It ships **not one line of
-JavaScript**: forms that post and redirect. Besides being less to maintain, it
-guarantees that the newsroom bundle can never show up on a public page, because
-it does not exist.
+/ admin es la parte privada del portal. No lleva **ni una línea de JavaScript**:
+formularios que postean y redirigen. Además de ser menos que mantener, garantiza
+que el paquete de la redacción no aparezca jamás en una página pública, porque
+no existe.
 
-## How you get in
+## Cómo se entra
 
-By invitation only. An `owner` invites from `/admin/invitar`; the link is
-single-use, expires in 72 hours, and whoever receives it picks their own
-password and the name they sign with. Accepting the invitation creates the user
-and their public author record at the same time: whoever joins a newsroom comes
-to sign their work.
+Solo por invitación. Un `owner` invita desde `/admin/invitar`; el enlace es de
+un solo uso, caduca en 72 horas y quien lo recibe elige su contraseña y el
+nombre con el que firma. Aceptar la invitación crea a la vez el usuario y su
+ficha pública de autor: quien entra en una redacción viene a firmar.
 
 ## Roles
 
 | | journalist | editor | owner |
 |---|---|---|---|
-| Edit their public profile | ✅ | ✅ | ✅ |
-| Write and edit their own drafts (F6) | ✅ | ✅ | ✅ |
-| Edit other people's work (F6) | — | ✅ | ✅ |
-| Publish (F6) | — | ✅ | ✅ |
-| Invite | — | — | ✅ |
+| Editar su perfil público | ✅ | ✅ | ✅ |
+| Escribir y editar sus borradores | ✅ | ✅ | ✅ |
+| Editar lo de otros | — | ✅ | ✅ |
+| Publicar y retirar de la web | — | ✅ | ✅ |
+| Invitar | — | — | ✅ |
 
-Permissions are checked **on the server and per route**. A link missing from the
-dashboard is cosmetics: whoever types the URL by hand meets a 403.
+Los permisos se comprueban **en el servidor**, y en las noticias contra la
+noticia concreta, no contra la pantalla. Que un enlace no aparezca en el panel
+es cosmética: quien escriba la URL a mano se encuentra un 403.
 
-## The first owner (bootstrap)
+## Escribir y publicar
 
-There is **no** — and there will be no — "if there are no users, the first one
-to arrive becomes owner" path. That shortcut is a classic vulnerability: all it
-takes is arriving first. The first owner is created by inserting their
-invitation directly in the database, which is an action that already requires
-server access:
+`/admin/noticias` es el listado de la redacción, y enseña **todas** las
+noticias, no solo las publicadas: el sentido de esa pantalla son precisamente
+los borradores. Van separadas en «las mías» y «del resto de la redacción», y
+este segundo grupo solo lo ve quien puede editar lo de otros. Cada línea dice su
+estado con una palabra además de con un color, porque un borrador y una
+publicada no pueden distinguirse solo por un tono.
+
+«Nueva noticia» crea el borrador y lleva directamente al editor,
+`/admin/noticias/<id>`, donde se hace todo:
+
+- **Escribir**: titular, entradilla, tema, relevancia y cuerpo en markdown
+  (`##` subtítulos, `**negrita**`, `*cursiva*`, listas, `>` cita, `[texto](enlace)`).
+  El HTML que se escriba se escapa y se ve como texto: no hay forma de meter
+  código en una noticia. Todavía no hay imágenes.
+- **Un idioma cada vez**: la barra de idiomas cambia qué versión se está
+  editando. Cada idioma es su propia fila, así que escribir la versión en inglés
+  no pisa la española.
+- **Ver cómo queda**: la vista previa usa el MISMO renderizado que se guarda, no
+  una aproximación.
+- **Publicar**: solo un editor o el responsable. La dirección de la noticia se
+  calcula del titular en español **al publicar**, y republicar no la mueve: una
+  URL que cambia después de compartida es un enlace roto. Sin titular no se
+  publica, y si otra noticia ya tiene esa dirección se avisa en vez de inventar
+  un número al final. Se puede marcar como noticia principal del día; el
+  destacado anterior deja de serlo solo.
+- **Retirar de la web**: vuelve a borrador y desaparece del portal al instante.
+  **No borra nada** — retirar una noticia y perderla son cosas distintas.
+
+Publicar se nota en la portada sin reconstruir ni reiniciar nada: se guarda en
+las mismas tablas que lee la web, y el aviso de la base de datos refresca la
+instantánea (los detalles, en
+[architecture.md](./architecture.md#newsroom-write-path)).
+
+Guardar lo hace quien haya pasado la comprobación de la noticia; publicar y
+retirar exigen permiso, y sin él la acción no se ejecuta en silencio: la página
+dice que no se puede.
+
+## El primer responsable (arranque)
+
+**No existe** —ni existirá— un camino tipo «si no hay usuarios, el primero que
+llegue se hace owner». Ese atajo es una vulnerabilidad clásica: basta con llegar
+antes. El primer owner se crea insertando su invitación directamente en la base
+de datos, que es una acción que ya exige acceso al servidor:
 
 ```bash
-# 1. Generate the token and its hash (the CLEAR-TEXT token is stored nowhere)
+# 1. Generar el token y su hash (el token EN CLARO no se guarda en ningún sitio)
 TOKEN=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
 HASH=$(node -e "console.log(require('crypto').createHash('sha256').update('$TOKEN').digest('hex'))")
 
-# 2. Insert the invitation (72 h)
+# 2. Insertar la invitación (72 h)
 psql "$DATABASE_URL" -c "INSERT INTO invites (email, role, token_hash, expires_at)
   VALUES ('quien.manda@ejemplo.com', 'owner', '$HASH', now() + interval '72 hours')"
 
-# 3. Hand this link to that person, over a private channel:
+# 3. Entregar este enlace a esa persona, por un canal privado:
 echo "https://rafael-news.brotea.dev/admin/aceptar?t=$TOKEN"
 ```
 
-From then on, that person invites everybody else from the interface.
+A partir de ahí, esa persona invita al resto desde la interfaz.
 
-## What protects what
+## Qué protege qué
 
-- **Opaque sessions in the database**, not JWTs: instant revocation is a
-  requirement. Suspending someone has to **throw them out if they are already
-  inside**, not just stop them coming back — which is why the session checks the
-  user's status on every request. There is no suspension screen yet: it is
-  `UPDATE users SET status='suspended' WHERE email=…`, and the next request that
-  person makes lands on the sign-in page.
-- **`scrypt` from `node:crypto`**, with a per-user salt and the parameters
-  stored next to the hash, so the cost can be raised tomorrow without
-  invalidating anybody's password. Careful when raising it: scrypt needs about
-  128·N·r bytes and node's default ceiling is 32 MB, so `maxmem` is computed
-  from N·r (with N=2¹⁵ and r=8 it needs 33.5 MB, and without raising it **every
-  sign-in attempt throws**).
-- **Double-submit CSRF** on every POST, compared in constant time.
-- **Generic error messages**: if "no such address" and "wrong password" could be
-  told apart, the form would say who writes for this outlet. For the same
-  reason, a non-existent address also pays the cost of a scrypt verification —
-  otherwise the response time would give it away anyway.
-- **Changing the password revokes every open session**: if it was stolen,
-  changing it has to be worth something. (The reset flow that triggers this has
-  no page yet — `/admin/restablecer` does not exist. Today a lost password is
-  fixed by sending a new invitation to the same address.)
-- **Audit log** of sign-in, sign-out, invitation and profile change. When
-  something gets published wrong, the question will be who and when.
+- **Sesiones opacas en base de datos**, no JWT: hace falta poder revocar al
+  instante. Suspender a alguien tiene que **echarlo si ya está dentro**, no solo
+  impedirle volver — por eso la sesión comprueba el estado del usuario en cada
+  petición.
+- **`scrypt` de `node:crypto`**, con sal por usuario y los parámetros guardados
+  junto al hash, para poder subir el coste mañana sin invalidar la contraseña de
+  nadie. Ojo si se sube: scrypt necesita ~128·N·r bytes y el tope por defecto de
+  Node son 32 MB, así que `maxmem` se calcula de N·r (con N=2¹⁵ y r=8 hacen falta
+  33,5 MB, y sin subirlo **cada intento de entrada lanza**).
+- **CSRF por doble envío** en todo POST, comparado en tiempo constante.
+- **Mensajes de error genéricos**: si «no existe ese correo» y «contraseña
+  incorrecta» se distinguieran, el formulario diría quién escribe en este medio.
+  Por lo mismo, un correo inexistente también paga el coste de un scrypt: si no,
+  el tiempo de respuesta lo delataría igual.
+- **Cambiar la contraseña revoca todas las sesiones abiertas**: si te la robaron,
+  cambiarla tiene que servir de algo.
+- **Registro de auditoría** de entrada, salida, invitación y cambio de perfil.
+  Cuando algo se publique mal, la pregunta será quién y cuándo.

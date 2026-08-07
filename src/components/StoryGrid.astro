@@ -2,10 +2,15 @@
 import type { StoryView } from '../lib/content/types';
 import ArticleCard from './ArticleCard.astro';
 
-interface Props { locale: string; stories: StoryView[] }
-const { locale, stories } = Astro.props;
+interface Props { locale: string; stories: StoryView[]; titulo?: string }
+const { locale, stories, titulo } = Astro.props;
 ---
 
+{/* En una página de listado, el h1 es el título de la página y las tarjetas
+    son h3: sin este h2 hay un salto de nivel, y quien navega por encabezados
+    no sabe si se ha perdido una sección. Va oculto a la vista porque el
+    título de la página ya lo dice todo visualmente. */}
+{titulo && <h2 class="visually-hidden">{titulo}</h2>}
 <ul class="cards">
   {stories.map((story) => (
     <li><ArticleCard locale={locale} story={story} /></li>

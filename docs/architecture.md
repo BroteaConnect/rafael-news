@@ -4,11 +4,12 @@ Brotea News is an Astro app with `output: 'server'` (node adapter, standalone):
 **every route is rendered per request**, no page opts into prerendering.
 Editorial content lives in Postgres, but a request never queries it: pages read
 an in-memory snapshot behind async accessors (see [Content layer](#content-layer)).
-The exceptions are the newsletter, which writes and reads its own table per
-request (see [Newsletter](#newsletter-double-opt-in)), and the newsroom under
-`/admin`, which resolves its session against Postgres on every request (see
-[Newsroom access](#newsroom-access-admin)) — no reader waits on Postgres to see
-a story, only to subscribe or to sign in.
+The exceptions are the two write sides: the newsletter, which writes and reads
+its own table per request (see [Newsletter](#newsletter-double-opt-in)), and the
+newsroom under `/admin`, which queries Postgres directly because drafts are
+precisely what the snapshot does not carry (see
+[Newsroom write path](#newsroom-write-path)). No reader waits on Postgres to see
+a story.
 Runtime and packaging live in [deployment.md](./deployment.md).
 
 ## Routes
@@ -45,41 +46,18 @@ Both feeds are built from the snapshot, so a story enters `/rss.xml` and
 `/sitemap.xml` the moment it enters the home page — no scheduled job. Absolute
 URLs come from `site` in `astro.config.mjs`.
 
-The newsroom lives under `/admin` and is **not localised**: the pages sit in
-`src/pages/admin/`, outside `[...lang]`, and every one of them renders in
-`DEFAULT_LOCALE` (`es`). There is no `/en/admin`. Its copy still goes through
-`t()` and exists in both dictionaries, so switching the newsroom's language
-later is a one-line change, not a rewrite.
+The newsroom lives under `/admin`, always in the default locale and with no
+language prefix. Every route there needs a session and every `POST` a CSRF field
+(`src/middleware.ts`; access and roles are in [redaccion.md](./redaccion.md)),
+and every `/admin` response ships `Cache-Control: no-store` and
+`X-Robots-Tag: noindex, nofollow`. The story routes:
 
-| Route | File | Access | Behaviour |
-| --- | --- | --- | --- |
-| `GET /admin` | `src/pages/admin/index.astro` | session | dashboard; each action link is shown only if `can(role, permission)` |
-| `GET,POST /admin/entrar` | `admin/entrar.astro` | public | sign-in form. On success: session cookie + fresh CSRF cookie, `303` → `/admin` |
-| `POST /admin/salir` | `admin/salir.ts` | public | revokes the session row, deletes the cookie, `303` → `/admin/entrar`. **POST only** — a `GET` logout is fired by any `<img>` in an email |
-| `GET,POST /admin/aceptar?t=<token>` | `admin/aceptar.astro` | public (the invite link) | pick byline + password; creates the user **and** its public author row |
-| `GET,POST /admin/perfil?idioma=<locale>` | `admin/perfil.astro` | session | edits the public author record, one locale at a time |
-| `GET,POST /admin/invitar` | `admin/invitar.astro` | session + `user:invite` | invite an address with a role; `403` for anyone else |
-
-`/admin/restablecer` is whitelisted as public in the middleware but **no page
-exists** — the route answers `404` today (see
-[Not implemented yet](#not-implemented-yet)).
-
-```bash
-# no session → the guard redirects before the page renders
-curl -sI localhost:4321/admin | head -2
-# HTTP/1.1 302 Found
-# location: /admin/entrar
-
-# anything under /admin that does render is never cached nor indexed
-curl -sI localhost:4321/admin/entrar | grep -iE 'cache-control|x-robots-tag'
-# cache-control: no-store
-# x-robots-tag: noindex, nofollow
-
-# a POST without the cookie/field CSRF pair is 403 before anything else happens
-curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:4321/admin/entrar \
-  -d 'email=a@b.com&password=x'
-# 403
-```
+| Route | Behaviour |
+| --- | --- |
+| `GET /admin/noticias` | story list, split into *mine* and *the rest of the newsroom* (the second group only for `story:any`) |
+| `POST /admin/noticias` | creates a draft and `303`-redirects to `/admin/noticias/<id>` |
+| `GET /admin/noticias/<id>` | the editor; `?idioma=<code>` selects which language row is being edited (default locale if absent or unknown) |
+| `POST /admin/noticias/<id>` | `accion=guardar\|publicar\|despublicar` (see [Newsroom write path](#newsroom-write-path)) |
 
 Language resolution in every page is `resolveLocale(Astro.params.lang)` from
 `src/lib/route.ts`: no prefix → default locale, a published locale → that
@@ -129,8 +107,7 @@ src/lib/content/snapshot.ts     the in-memory snapshot: init(), current(), conte
 src/lib/content/db.ts           Postgres: migration, snapshot query, LISTEN
 src/lib/content/seed.data.json  fallback content and the first-run seed rows
 src/migrations/001_content.sql  the schema
-src/middleware.ts               boots the snapshot, sets ETag / Cache-Control,
-                                and guards /admin (see Newsroom access)
+src/middleware.ts               boots the snapshot, sets ETag / Cache-Control
 ```
 
 ```mermaid
@@ -162,9 +139,12 @@ not in a `jsonb` column, so editing one language never overwrites another.
   drafts and scheduled stories are invisible to readers.
 - A partial unique index (`stories_one_lead ... WHERE lead AND status='published'`)
   makes two lead stories impossible.
-- `body_html` is stored already rendered and sanitised; templates print it with
-  `<Fragment set:html>`. A story without `body_html` renders the
-  `article.body-pending` copy instead of an invented text.
+- `body_md` is what the newsroom typed (the editor loads it back to keep
+  writing); `body_html` is the render of that Markdown, written by `saveStory()`
+  and never by hand. Templates print `body_html` with `<Fragment set:html>` — it
+  is stored already escaped and rendered, so no template is responsible for
+  sanitising ([Newsroom write path](#newsroom-write-path)). A story without
+  `body_html` renders the `article.body-pending` copy instead of an invented text.
 
 ### Snapshot and invalidation
 
@@ -207,8 +187,7 @@ Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=86400
 
 A matching `If-None-Match` gets `304` with no body. The version comes from
 `content_version`, so publishing invalidates every page at once and nobody has
-to remember to purge anything. `/api/*`, `/healthz` and `/admin` are excluded —
-the newsroom gets `no-store` instead.
+to remember to purge anything. `/api/*` and `/healthz` are excluded.
 
 ```bash
 etag=$(curl -sI localhost:4321/ | grep -i '^etag:' | cut -d' ' -f2- | tr -d '\r')
@@ -265,168 +244,6 @@ Rules:
   plain JSON (so the node test can read it without Vite) and only `db.ts` and
   `snapshot.ts` import it — as the cold-start fallback and as the rows loaded on
   first run.
-
-## Newsletter (double opt-in)
-
-Subscriptions live in this app's own Postgres. Until feature 59 the form
-forwarded the address server-side to the factory's requirements collector
-(`PUBLIC_REQUIREMENTS_ENDPOINT`); **that forwarding is gone** — no address
-leaves the app any more, and there is no build-time endpoint to configure.
-
-An address is not a subscriber until the reader clicks the link that only
-reaches their inbox:
-
-```mermaid
-graph TD
-  R[Reader] -->|POST /api/newsletter| A[api/newsletter.ts]
-  A -->|row 'pending' + token hash| DB[(Postgres)]
-  A -->|confirmation email| M[SMTP]
-  R -->|clicks the link| C[GET /boletin/confirmar?t=…]
-  C -->|status='confirmed'| DB
-  R -->|clicks unsubscribe| B[GET /boletin/baja?t=…]
-  B -->|status='unsubscribed'| DB
-```
-
-```
-src/lib/newsletter/core.ts   pure logic: email normalisation, tokens, expiry, rate limiter
-src/lib/newsletter/store.ts  Postgres: signup(), confirm(), unsubscribe()
-src/lib/newsletter/mail.ts   the confirmation email's copy; sends through src/lib/mail/transport.ts
-src/pages/api/newsletter.ts  the POST endpoint
-src/pages/[...lang]/boletin/confirmar.astro   confirmation page
-src/pages/[...lang]/boletin/baja.astro        unsubscribe page
-src/migrations/002_newsletter.sql             the schema
-```
-
-`core.ts` deliberately imports nothing but `node:crypto`, so the whole of it
-runs under `node --test` (see [Testing](#testing)). It has its own pool
-(`max: 3`) in `store.ts`: the newsletter must never contend with the content
-layer's connections.
-
-### `POST /api/newsletter`
-
-Request body is JSON; `locale` is optional and falls back to the default locale
-if it is not a published one. Every response is
-`{"message":"<already translated>"}` with `Cache-Control: no-store`.
-
-| Status | When |
-| --- | --- |
-| `202` | Accepted. Returned for a brand-new address, a pending one **and** an already-confirmed one — see below |
-| `400` | `email` missing or not shaped like an address (`newsletter.invalid`) |
-| `429` | Rate limited (`newsletter.too-many`) |
-| `503` | No `DATABASE_URL`: nobody can be signed up (`newsletter.error`) |
-| `500` | The insert failed (`newsletter.error`) |
-| `405` | `GET` on the route, answering `{"message":"POST {email, locale}","max_email":200}` |
-
-**The response never distinguishes a new address from a subscribed one.** If it
-did, the public form would be a checker for who reads this outlet. An
-already-confirmed address gets the same `202` and no second email.
-
-Rate limits are in-memory, per process, sliding window (`RateLimiter`):
-
-| Key | Limit |
-| --- | --- |
-| IP (first entry of `x-forwarded-for`, else `clientAddress`) | 5 per minute |
-| Email address | 3 per hour |
-
-Storing an address is cheap; **sending** one is not, which is what the limits
-protect. The map is cleared wholesale past 10 000 keys so a rotating IP cannot
-turn the defence into a memory leak.
-
-Email validation is deliberately loose (`^[^\s@]+@[^\s@]+\.[^\s@]{2,}$`, max
-200 chars, trimmed and lower-cased): only nonsense is rejected. Who owns the
-mailbox is decided by the confirmation email, not by a regex.
-
-### Data model
-
-`src/migrations/002_newsletter.sql`, applied at boot like every other migration
-(see [deployment.md](./deployment.md#migrations)). It needs the `citext`
-extension (`CREATE EXTENSION IF NOT EXISTS citext`).
-
-| Column | Notes |
-| --- | --- |
-| `id` | `bigint GENERATED ALWAYS AS IDENTITY` PK |
-| `email` | `citext NOT NULL UNIQUE` — `Ana@x.com` and `ana@x.com` are one subscriber, not two |
-| `locale` | `text NOT NULL DEFAULT 'es'`; refreshed on every signup attempt |
-| `status` | `pending \| confirmed \| unsubscribed`, `CHECK`-constrained, default `pending` |
-| `token_hash` | `NOT NULL`, sha256 hex. **The clear-text token is never stored** |
-| `token_expires_at` | `timestamptz`, `NULL` = never expires |
-| `confirmed_at`, `unsubscribed_at` | `timestamptz` |
-| `source` | `text NOT NULL DEFAULT 'portada'`; the endpoint writes `'portada'` |
-| `created_at`, `updated_at` | `timestamptz NOT NULL DEFAULT now()` |
-
-Indexes: `newsletter_token_idx (token_hash)` and `newsletter_status_idx
-(status)`. Only the hash is indexed because only the hash is ever looked up.
-
-### Token lifecycle
-
-One token per row, 32 random bytes (`randomBytes(32).toString('base64url')`),
-travelling in clear only to the subscriber's inbox; the table holds
-`sha256(token)` and comparison is `timingSafeEqual` on the decoded digests, so
-neither a database dump nor response timing hands out someone else's link.
-
-| Event | Effect on the row |
-| --- | --- |
-| First signup | `pending`, new token, `token_expires_at = now + 72h` (`CONFIRM_TTL_HOURS`) |
-| Signup again while `pending` | Token **renewed** and the 72 h restarted — insisting must not mean waiting three days for a lost link |
-| Signup again while `confirmed` | Token and expiry left untouched (an unsubscribe link already in an inbox keeps working), no email sent |
-| Signup again while `unsubscribed` | New token + email; the row only returns to `confirmed` if the link is clicked again — resubscribing is a fresh double opt-in |
-| `/boletin/confirmar?t=…` | `status='confirmed'`, `confirmed_at=now()`, `token_expires_at=NULL` |
-| Confirming twice | Still success: a mail client that pre-fetches links must not break the page |
-| Expired token | `boletin.caducado.*` page; the reader is told to sign up again |
-| Unknown or missing token | `boletin.invalido.*` page |
-| `/boletin/baja?t=…` | `status='unsubscribed'`, `unsubscribed_at=now()` |
-
-**The unsubscribe token never expires.** After confirmation the row keeps its
-`token_hash` with a `NULL` expiry, so the same link works forever: a dead
-unsubscribe link forces a reader to write an email to exercise a right they
-already have.
-
-Both are **pages**, not JSON: whoever clicks from an inbox is a person with a
-browser, and gets the outlet's design and a link back home (`boletin.volver`).
-They resolve the locale like every other page, so `/xx/boletin/baja` 404s.
-
-### What the app does *not* do
-
-- It sends exactly one kind of email: the confirmation. The newsletter itself is
-  not sent by this feature, so a confirmed address receives nothing else.
-- **No open tracking**, no pixel, no third party: the only outbound traffic is
-  SMTP.
-- **Nothing deletes rows.** Unsubscribing is a status change, which is what
-  keeps a former subscriber from being silently re-added; erasure requests are
-  handled out of band, as the privacy notice at `/legal#privacidad` says. There
-  is no endpoint or job that deletes subscriber data.
-
-### Degraded modes
-
-| Situation | Behaviour |
-| --- | --- |
-| SMTP not configured (`SMTP_HOST`/`SMTP_USER`/`SMTP_PASS` missing) | The transport logs `[correo] SMTP sin configurar: no se envía "<subject>"`, returns `false`, the row stays `pending` and the reader still gets `202` |
-| SMTP configured but failing | Same: the error is logged, never thrown. The mail provider's bad day is not the reader's fault |
-| No `DATABASE_URL` | `503` and a logged error — unlike the content layer, there is no seed to fall back on |
-
-## Mail transport
-
-`src/lib/mail/transport.ts` is **the only module in the app that talks to
-SMTP**. Both senders are thin copy wrappers on top of it:
-
-```
-src/lib/mail/transport.ts     nodemailer transport, configured(), sendMail()
-src/lib/newsletter/mail.ts    sendConfirmation()  → mail.confirm.* keys
-src/lib/auth/mail.ts          sendInvite(), sendReset() → mail.invite.* / mail.reset.* keys
-```
-
-`sendMail({ to, subject, lines, ctaText?, ctaUrl?, footer? })` builds the plain
-text (`lines.join('\n')`) and an escaped HTML courtesy version, and returns a
-`boolean`. **It never throws**: a mail provider having a bad day cannot become
-an error page for someone who filled in a form and can do nothing about it. The
-caller decides what to tell them — the invite page, for instance, reports
-`admin.invitar.sin-correo` and keeps the invitation row so the owner can resend
-it.
-
-One transport and not one per feature: two SMTP configurations in the same app
-is how one of them silently stops working. The variables (`SMTP_HOST`,
-`SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`) are read here and nowhere
-else — see [deployment.md](./deployment.md#runtime-env-smtp).
 
 ## Newsroom access (`/admin`)
 
@@ -693,6 +510,299 @@ otherwise:
 - **Story editing** (`story:own`, `story:any`, `story:publish`) belongs to a
   later feature; the dashboard says so on the page.
 
+## Newsroom write path
+
+The write side of the same tables the snapshot reads. It is not behind the
+accessors on purpose: the point of these screens is the drafts, and the snapshot
+only carries what is published.
+
+```
+src/lib/markdown.ts                     Markdown → HTML, readingMinutes, slugify
+src/lib/newsroom/store.ts               the write accessors (own pool, max: 3)
+src/pages/admin/noticias/index.astro    the story list
+src/pages/admin/noticias/[id].astro     the editor: write, preview, publish, unpublish
+src/locales/markdown.test.mjs           the renderer's tests
+```
+
+```mermaid
+graph LR
+  W[Newsroom] -->|saveStory| MD[markdown.ts]
+  MD -->|body_md + body_html| DB[(Postgres)]
+  W -->|publish| DB
+  DB -. trigger + NOTIFY .-> S[(in-memory snapshot)]
+  S --> R[Reader]
+```
+
+Its own pool (`max: 3`), like the newsletter's: writing must never contend with
+the content layer's connections.
+
+### Permissions
+
+Checked against the **specific story**, not against the screen — a link that is
+not painted is cosmetics, and the id is in the URL:
+
+- `[id].astro` loads the draft first. An unknown id is `Astro.rewrite('/404')`,
+  like any public page.
+- Then `draft.authorId === user.authorId` → allowed; otherwise
+  `can(role, 'story:any')` (editor, owner) or a bare `403`.
+- `accion=guardar` needs nothing more: whoever passed that check edits the text.
+- `accion=publicar` / `accion=despublicar` need `story:publish` (editor, owner).
+  Without it the action is not silently skipped: the page answers with the
+  `admin.noticias.sin-permiso` notice.
+- Creating a draft is open to every role — a journalist starting a story is not
+  a privileged act. The row is inserted with the user's `authorId`, which exists
+  because accepting an invitation creates the public author record too
+  ([redaccion.md](./redaccion.md)).
+
+### `src/lib/newsroom/store.ts`
+
+| Function | Returns / failure modes |
+| --- | --- |
+| `listStories(locale)` | `StoryRow[]` — **every** story, any status, ordered by `COALESCE(published_at, updated_at) DESC`. `LEFT JOIN`s with fallbacks (`(sin título)`, empty author name) so a barely-started draft still lists instead of disappearing |
+| `getDraft(id)` | `StoryDraft \| null` — the row plus one `i18n` entry per existing locale row, carrying `bodyMd` (the Markdown source, never the HTML) |
+| `createStory(authorId, topicId)` | the new id, `st-<base36 time>-<base36 random>`, inserted as `draft` with `slug = id` and `reading_minutes = 1`. A timestamped id sorts by itself and does not depend on a headline, which changes a lot before publication |
+| `saveStory(input)` | `void`. One transaction: `stories` (topic, relevance, `reading_minutes`, `updated_at`) plus an upsert of one `story_i18n` row (title, standfirst, `body_md`, `body_html`). It renders the Markdown itself; it never publishes and never touches the slug. `reading_minutes` is recomputed from the body just saved |
+| `publish(id, defaultLocale, lead)` | `'ok' \| 'sin-titulo' \| 'slug-repetido'` — the two failures write nothing |
+| `unpublish(id)` | `void`: `status='draft'`, `lead=false`. **Deletes nothing** — pulling a story and losing it are different things |
+
+Saving edits one language at a time (`?idioma=<code>`), which is what the
+`story_i18n` rows-per-locale model is for: writing the English version cannot
+overwrite the Spanish one.
+
+### Publishing
+
+- The slug is computed **at publish time**, from the default-locale title
+  (`slugify`, 80 chars max, the id as fallback if the title slugifies to
+  nothing). Never while drafting: the headline changes ten times, and a URL that
+  moves after publication is a broken link for whoever shared it.
+- An already-published story **keeps its slug** when republished.
+- No default-locale title → `'sin-titulo'`; the page says a headline is needed.
+- Another story already holds that slug → `'slug-repetido'`. It is not resolved
+  by appending a number: two identical headlines are a decision for the desk.
+- `published_at = COALESCE(published_at, now())` — republishing does not re-date
+  a story.
+- With `lead`, the previous lead is demoted **inside the same transaction and
+  before** the promotion: `stories_one_lead` is a partial unique index, so doing
+  it the other way round aborts the transaction.
+
+The story reaches the reader through the machinery already described in
+[Snapshot and invalidation](#snapshot-and-invalidation): the `UPDATE` fires
+`bump_content_version()`, which bumps the version and `pg_notify`s `contenido`;
+the process rebuilds the snapshot and the story is on the home page, in
+`/rss.xml`, `/sitemap.xml` and the search index, with every ETag already
+invalidated. No rebuild, no restart, no cache to purge. Unpublishing travels the
+same path in reverse — the snapshot only loads `status='published'`, so the
+story leaves the site on the next refresh while its text stays in the database.
+
+### `src/lib/markdown.ts`
+
+Markdown is rendered **when the story is saved**, not when it is read, and the
+result is stored in `body_html`. That leaves a single door through which HTML
+enters the system, instead of trusting every template to escape.
+
+The renderer is hand-written rather than a parser plus a sanitiser, and the
+ordering is the security property: **escape first, emit after**. Author text is
+escaped (`& < > " '`) on the way in, and only the tags in the table below are
+emitted afterwards, so unescaped author HTML never exists at any point — which
+is exactly where "parse, then sanitise" chains fail. The price is a reduced
+subset of Markdown.
+
+| Input | Output |
+| --- | --- |
+| `## …` to `#### …` | `<h2>`–`<h4>`. **No `<h1>` is ever emitted**: the page's h1 is the headline, and two h1s break the heading outline for a screen reader. A lone `#` stays a paragraph |
+| `**bold**`, `*italic*` | `<strong>`, `<em>` |
+| `` `code` `` | `<code>`; extracted before anything else so its contents are not re-interpreted as emphasis |
+| `- item`, `1. item` | `<ul>`, `<ol>` |
+| `> quote` | `<blockquote><p>…</p></blockquote>` |
+| `[text](url)` | `<a href="…">` if the URL passes `safeHref`, else the plain text |
+| anything else | `<p>`; consecutive lines join with a space, a blank line closes the paragraph |
+
+`safeHref` allows `http:`, `https:`, `mailto:` and site-relative `/path` only
+(`//host` is another origin and is rejected). It matches with whitespace and
+hyphens collapsed and lower-cased, so `javascript:`, `JaVaScRiPt:`,
+`java script:`, `data:` and `vbscript:` all fail. **A rejected link keeps its
+text and loses the anchor** — the reader sees the words, not a dead or dangerous
+href. External `http(s)` links get `rel="noopener nofollow"`.
+
+Current limits, stated as limits: no images (the renderer emits no `<img>` and
+the editor has no image field), no tables, and no raw HTML — author markup is
+escaped and shown as text.
+
+Also exported: `readingMinutes(source)` (200 words per minute, never below 1,
+because "0 min read" means nothing) and `slugify(title)` (lower-case, accents
+stripped via NFD, non-alphanumerics collapsed to `-`, trimmed, 80 chars).
+
+The editor's preview calls the very same `renderMarkdown`, so what the desk sees
+before publishing is the render that gets stored, not an approximation.
+
+The topic dropdown is filled from `getTopics(locale)`, i.e. from the content
+snapshot: a topic name is editorial content, not UI copy, so it is never a `t()`
+key. The newsroom's own chrome (`admin.noticias.*`) is UI copy and lives in both
+locale files; its status family is declared in the `DYNAMIC` map of
+`content.test.mjs` because the editor builds those keys from a template.
+
+## Newsletter (double opt-in)
+
+Subscriptions live in this app's own Postgres. Until feature 59 the form
+forwarded the address server-side to the factory's requirements collector
+(`PUBLIC_REQUIREMENTS_ENDPOINT`); **that forwarding is gone** — no address
+leaves the app any more, and there is no build-time endpoint to configure.
+
+An address is not a subscriber until the reader clicks the link that only
+reaches their inbox:
+
+```mermaid
+graph TD
+  R[Reader] -->|POST /api/newsletter| A[api/newsletter.ts]
+  A -->|row 'pending' + token hash| DB[(Postgres)]
+  A -->|confirmation email| M[SMTP]
+  R -->|clicks the link| C[GET /boletin/confirmar?t=…]
+  C -->|status='confirmed'| DB
+  R -->|clicks unsubscribe| B[GET /boletin/baja?t=…]
+  B -->|status='unsubscribed'| DB
+```
+
+```
+src/lib/newsletter/core.ts   pure logic: email normalisation, tokens, expiry, rate limiter
+src/lib/newsletter/store.ts  Postgres: signup(), confirm(), unsubscribe()
+src/lib/newsletter/mail.ts   SMTP (nodemailer): sendConfirmation()
+src/pages/api/newsletter.ts  the POST endpoint
+src/pages/[...lang]/boletin/confirmar.astro   confirmation page
+src/pages/[...lang]/boletin/baja.astro        unsubscribe page
+src/migrations/002_newsletter.sql             the schema
+```
+
+`core.ts` deliberately imports nothing but `node:crypto`, so the whole of it
+runs under `node --test` (see [Testing](#testing)). It has its own pool
+(`max: 3`) in `store.ts`: the newsletter must never contend with the content
+layer's connections.
+
+### `POST /api/newsletter`
+
+Request body is JSON; `locale` is optional and falls back to the default locale
+if it is not a published one. Every response is
+`{"message":"<already translated>"}` with `Cache-Control: no-store`.
+
+| Status | When |
+| --- | --- |
+| `202` | Accepted. Returned for a brand-new address, a pending one **and** an already-confirmed one — see below |
+| `400` | `email` missing or not shaped like an address (`newsletter.invalid`) |
+| `429` | Rate limited (`newsletter.too-many`) |
+| `503` | No `DATABASE_URL`: nobody can be signed up (`newsletter.error`) |
+| `500` | The insert failed (`newsletter.error`) |
+| `405` | `GET` on the route, answering `{"message":"POST {email, locale}","max_email":200}` |
+
+**The response never distinguishes a new address from a subscribed one.** If it
+did, the public form would be a checker for who reads this outlet. An
+already-confirmed address gets the same `202` and no second email.
+
+Rate limits are in-memory, per process, sliding window (`RateLimiter`):
+
+| Key | Limit |
+| --- | --- |
+| IP (first entry of `x-forwarded-for`, else `clientAddress`) | 5 per minute |
+| Email address | 3 per hour |
+
+Storing an address is cheap; **sending** one is not, which is what the limits
+protect. The map is cleared wholesale past 10 000 keys so a rotating IP cannot
+turn the defence into a memory leak.
+
+Email validation is deliberately loose (`^[^\s@]+@[^\s@]+\.[^\s@]{2,}$`, max
+200 chars, trimmed and lower-cased): only nonsense is rejected. Who owns the
+mailbox is decided by the confirmation email, not by a regex.
+
+### Data model
+
+`src/migrations/002_newsletter.sql`, applied at boot like every other migration
+(see [deployment.md](./deployment.md#migrations)). It needs the `citext`
+extension (`CREATE EXTENSION IF NOT EXISTS citext`).
+
+| Column | Notes |
+| --- | --- |
+| `id` | `bigint GENERATED ALWAYS AS IDENTITY` PK |
+| `email` | `citext NOT NULL UNIQUE` — `Ana@x.com` and `ana@x.com` are one subscriber, not two |
+| `locale` | `text NOT NULL DEFAULT 'es'`; refreshed on every signup attempt |
+| `status` | `pending \| confirmed \| unsubscribed`, `CHECK`-constrained, default `pending` |
+| `token_hash` | `NOT NULL`, sha256 hex. **The clear-text token is never stored** |
+| `token_expires_at` | `timestamptz`, `NULL` = never expires |
+| `confirmed_at`, `unsubscribed_at` | `timestamptz` |
+| `source` | `text NOT NULL DEFAULT 'portada'`; the endpoint writes `'portada'` |
+| `created_at`, `updated_at` | `timestamptz NOT NULL DEFAULT now()` |
+
+Indexes: `newsletter_token_idx (token_hash)` and `newsletter_status_idx
+(status)`. Only the hash is indexed because only the hash is ever looked up.
+
+### Token lifecycle
+
+One token per row, 32 random bytes (`randomBytes(32).toString('base64url')`),
+travelling in clear only to the subscriber's inbox; the table holds
+`sha256(token)` and comparison is `timingSafeEqual` on the decoded digests, so
+neither a database dump nor response timing hands out someone else's link.
+
+| Event | Effect on the row |
+| --- | --- |
+| First signup | `pending`, new token, `token_expires_at = now + 72h` (`CONFIRM_TTL_HOURS`) |
+| Signup again while `pending` | Token **renewed** and the 72 h restarted — insisting must not mean waiting three days for a lost link |
+| Signup again while `confirmed` | Token and expiry left untouched (an unsubscribe link already in an inbox keeps working), no email sent |
+| Signup again while `unsubscribed` | New token + email; the row only returns to `confirmed` if the link is clicked again — resubscribing is a fresh double opt-in |
+| `/boletin/confirmar?t=…` | `status='confirmed'`, `confirmed_at=now()`, `token_expires_at=NULL` |
+| Confirming twice | Still success: a mail client that pre-fetches links must not break the page |
+| Expired token | `boletin.caducado.*` page; the reader is told to sign up again |
+| Unknown or missing token | `boletin.invalido.*` page |
+| `/boletin/baja?t=…` | `status='unsubscribed'`, `unsubscribed_at=now()` |
+
+**The unsubscribe token never expires.** After confirmation the row keeps its
+`token_hash` with a `NULL` expiry, so the same link works forever: a dead
+unsubscribe link forces a reader to write an email to exercise a right they
+already have.
+
+Both are **pages**, not JSON: whoever clicks from an inbox is a person with a
+browser, and gets the outlet's design and a link back home (`boletin.volver`).
+They resolve the locale like every other page, so `/xx/boletin/baja` 404s.
+
+### What the app does *not* do
+
+- It sends exactly one kind of email: the confirmation. The newsletter itself is
+  not sent by this feature, so a confirmed address receives nothing else.
+- **No open tracking**, no pixel, no third party: the only outbound traffic is
+  SMTP.
+- **Nothing deletes rows.** Unsubscribing is a status change, which is what
+  keeps a former subscriber from being silently re-added; erasure requests are
+  handled out of band, as the privacy notice at `/legal#privacidad` says. There
+  is no endpoint or job that deletes subscriber data.
+
+### Degraded modes
+
+| Situation | Behaviour |
+| --- | --- |
+| SMTP not configured (`SMTP_HOST`/`SMTP_USER`/`SMTP_PASS` missing) | `sendConfirmation` logs a warning, returns `false`, the row stays `pending` and the reader still gets `202` |
+| SMTP configured but failing | Same: the error is logged, never thrown. The mail provider's bad day is not the reader's fault |
+| No `DATABASE_URL` | `503` and a logged error — unlike the content layer, there is no seed to fall back on |
+
+## Mail transport
+
+`src/lib/mail/transport.ts` is **the only module in the app that talks to
+SMTP**. Both senders are thin copy wrappers on top of it:
+
+```
+src/lib/mail/transport.ts     nodemailer transport, configured(), sendMail()
+src/lib/newsletter/mail.ts    sendConfirmation()  → mail.confirm.* keys
+src/lib/auth/mail.ts          sendInvite(), sendReset() → mail.invite.* / mail.reset.* keys
+```
+
+`sendMail({ to, subject, lines, ctaText?, ctaUrl?, footer? })` builds the plain
+text (`lines.join('\n')`) and an escaped HTML courtesy version, and returns a
+`boolean`. **It never throws**: a mail provider having a bad day cannot become
+an error page for someone who filled in a form and can do nothing about it. The
+caller decides what to tell them — the invite page, for instance, reports
+`admin.invitar.sin-correo` and keeps the invitation row so the owner can resend
+it.
+
+One transport and not one per feature: two SMTP configurations in the same app
+is how one of them silently stops working. The variables (`SMTP_HOST`,
+`SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`) are read here and nowhere
+else — see [deployment.md](./deployment.md#runtime-env-smtp).
+
 ## Copy vs content
 
 Two different things, and they live in two different places.
@@ -723,14 +833,10 @@ Two different things, and they live in two different places.
    dynamic family means adding it there.
 
 Without (5) a missing key silently falls back to Spanish and the page ships half
-translated with green CI. That is also what forces the newsletter's and the
-newsroom's key families (`newsletter.*`, `boletin.*`, `mail.confirm.*`,
-`admin.*`, `mail.invite.*`, `mail.reset.*`) into **both** dictionaries: they are
-read from `.astro` and `.ts` sources like any other key, so a Spanish-only
-confirmation or invitation email fails the test instead of the reader. The
-newsroom renders in the default locale only (see [Routes](#routes)), but its
-copy is translated all the same — including `admin.rol.<role>`, which is built
-from a template and therefore declared in the test's `DYNAMIC` map.
+translated with green CI. That is also what forces the newsletter's key families
+(`newsletter.*`, `boletin.*`, `mail.confirm.*`) into **both** dictionaries: they
+are read from `.astro` and `.ts` sources like any other key, so a Spanish-only
+confirmation email fails the test instead of the reader.
 
 ## Components
 
@@ -754,12 +860,6 @@ component counts as a dead file against the fleet budget).
 `src/layouts/Layout.astro` wraps them: `<html lang dir>`, title/description,
 canonical, Open Graph, hreflang alternates + `x-default`, the display-font
 preload, analytics and error-tracking snippets, header, `<main>`, footer.
-
-`src/layouts/Admin.astro` is the newsroom's separate shell and uses **none** of
-those components: theme + base styles, `<meta name="robots" content="noindex,
-nofollow">`, a bar with the wordmark and — when a `user` prop is passed — their
-address, their role badge and the sign-out form (a `POST`, carrying the CSRF
-field). No canonical, no analytics, no public chrome, and no client script.
 
 ## Theme and formatting rules
 
@@ -816,9 +916,8 @@ the next `brotea quality sync` would overwrite it.
 files execute in bare node (`node --test`), without Vite: read fixtures with
 `fs`, never `import` a `.ts` module that pulls in `import.meta.glob`. That is
 why the seed data sits in `seed.data.json` next to the module that consumes it,
-and why `src/locales/newsletter.test.mjs` and `src/locales/auth.test.mjs` — the
-newsletter's and the newsroom's logic tests — live there too, next to the
-content and locale gates.
+and why `src/locales/newsletter.test.mjs` — the newsletter's logic tests — lives
+there too, next to the content and locale gates.
 
 To test a `.ts` module in bare node, `src/lib/load-ts.mjs` strips its types with
 esbuild (already in `node_modules` as an astro dependency) and imports the result
@@ -830,21 +929,19 @@ const { normalizeEmail } = await loadTs(new URL('../lib/newsletter/core.ts', imp
 ```
 
 **It only works for self-contained modules** (no relative imports) — which is
-exactly the constraint that keeps `newsletter/core.ts` and `auth/core.ts` free
-of Postgres and SMTP. `newsletter.test.mjs` covers what cannot fail silently:
-what counts as an email, that the stored hash never reveals the token (and that
-a wrong-length hash returns `false` instead of throwing), the 72 h expiry versus
-the never-expiring unsubscribe link, and that the rate limiter limits per key
-and forgets outside its window.
+exactly the constraint that keeps `newsletter/core.ts` free of Postgres and
+SMTP, and `markdown.ts` free of anything at all. `newsletter.test.mjs` covers
+what cannot fail silently: what counts as an email, that the stored hash never
+reveals the token (and that a wrong-length hash returns `false` instead of
+throwing), the 72 h expiry versus the never-expiring unsubscribe link, and that
+the rate limiter limits per key and forgets outside its window.
 
-`auth.test.mjs` does the same for the newsroom, where a bug is not a visible
-error but an open door: that the hash never contains the password and is salted
-per user, that `verifyPassword` returns `false` on garbage instead of throwing, the
-12-character
-rule with no symbol puzzles, that tokens are unique and never stored in clear,
-that CSRF matches nothing but itself — `('', '')` included — that permissions
-are exactly the table and no role inherits from another, and the 30-day /
-72-hour / 2-hour expiries.
+`markdown.test.mjs` guards the only door through which HTML enters the portal, so
+half of it is injection attempts rather than pretty examples: `<script>` and
+`onerror=` escaped to text, `javascript:` / `data:` / `vbscript:` and the
+`java script:` trick producing no `href`, quotes inside link text not breaking
+out of the attribute, headings never reaching `h1`, and empty or `null` input not
+throwing. A renderer that fails here does not raise an error — it opens a hole.
 
 Neither `npm test` nor CI needs a database or an SMTP server: without
 `DATABASE_URL` the app serves the seed, which is also how `npm run dev` works

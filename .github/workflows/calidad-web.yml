@@ -1,0 +1,25 @@
+name: Calidad web
+# Fichero PROPIO del proyecto, no generado por `brotea quality sync`. El ci.yml
+# lo materializa el catálogo de la fábrica y añadirle pasos aquí se perdería en
+# la próxima migración de flota; por eso este gate vive en su propio workflow.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  presupuesto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Arranca el servidor real y le hace preguntas por HTTP: peso comprimido
+      # por página, cabeceras de caché y reglas de accesibilidad estructurales.
+      # Sin DATABASE_URL a propósito — sirve la semilla, y así la medida no
+      # depende de cuántas noticias haya publicadas ese día.
+      - run: npm run gate:web
