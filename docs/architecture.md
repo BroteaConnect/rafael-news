@@ -245,6 +245,271 @@ Rules:
   `snapshot.ts` import it — as the cold-start fallback and as the rows loaded on
   first run.
 
+## Newsroom access (`/admin`)
+
+The private half of the portal: sign in, invite, and edit your public author
+profile. Writing stories is not part of it — the dashboard says so
+(`admin.pendiente-contenido`) instead of leaving people hunting for a button.
+
+**`/admin` ships zero JavaScript.** Forms that post and redirect, nothing else.
+Besides being less to maintain, it guarantees that the newsroom bundle can never
+leak into a public page, because it does not exist.
+
+```
+src/lib/auth/core.ts        crypto and rules: scrypt, tokens, CSRF, roles, rate limiter
+src/lib/auth/store.ts       Postgres: login, sessions, invites, profile, resets, audit
+src/lib/auth/mail.ts        invite / reset emails (copy over the shared transport)
+src/middleware.ts           session resolution, CSRF, the /admin guard, no-store + noindex
+src/layouts/Admin.astro     newsroom chrome: title, robots meta, identity bar, sign-out form
+src/pages/admin/*           the pages listed in Routes
+src/migrations/003_auth.sql the schema
+src/locales/auth.test.mjs   the tests for core.ts
+```
+
+The split is deliberate: everything that *cannot be wrong* lives in `core.ts`,
+which imports nothing but `node:crypto` and is therefore fully testable in bare
+node. `store.ts` is queries only.
+
+### What the middleware does on every request
+
+`src/middleware.ts`, in this order:
+
+1. `init()` — the content snapshot (memoised, never throws).
+2. **Session** — `locals.user` is set to `null`, then, if there is a
+   `brotea_sesion` cookie *and* `DATABASE_URL` is configured, to
+   `sessionFromToken(token)`. A database error is logged and treated as "no
+   session": a Postgres blip must not turn `/admin` into an opaque `500`.
+3. **CSRF** — on every `POST` outside `/api/`. Mismatch → `403 CSRF`, before
+   any page code runs.
+4. **Guard** — `/admin/*` without a session → `302` to `/admin/entrar`. The
+   public list is a **whitelist** (`entrar|salir|aceptar|restablecer`), not a
+   blacklist, so a route added tomorrow is protected by default.
+5. Issues a CSRF cookie on any `/admin` request that arrives without one.
+6. After rendering: `/admin` responses get `Cache-Control: no-store` and
+   `X-Robots-Tag: noindex, nofollow` and return early — they never get an ETag,
+   and the public `Cache-Control` never touches them. `Admin.astro` also emits
+   `<meta name="robots" content="noindex, nofollow">`.
+
+The `POST` body is read **once**, by the middleware, and travels in
+`locals.form`. Pages must read `Astro.locals.form`, never
+`Astro.request.formData()`: `request.clone().formData()` returns `null` in
+silence over a streaming body with the node adapter, which turned every form
+submission into a `403` with a perfectly matching CSRF pair.
+
+`locals` is typed in `src/env.d.ts`: `user: SessionUser | null` and
+`form: FormData | null`.
+
+### CSRF: double submit
+
+The same random value in a cookie (`brotea_csrf`, **not** `httpOnly`, so the
+form can read it) and in a hidden `csrf` field, compared with `timingSafeEqual`.
+It is not a secret from whoever is already on the page; its value is that a
+third party cannot read it from another origin. `SameSite=Lax` alone does not
+cover a `POST` from a compromised subdomain, and this costs one cookie and one
+comparison.
+
+A fresh CSRF cookie is minted on sign-in — reusing the previous one leaves a
+valid token behind on a shared computer — and otherwise lasts 24 h.
+
+**Astro's own `checkOrigin` is turned off in `astro.config.mjs`, and that is
+the replacement, not a removal.** Behind the node adapter `url.origin` is
+`http://localhost` while the browser sends the real domain, so the built-in
+check never matches and every newsroom form submission answered `403`. That was
+measured, not assumed. If the adapter ever computes the origin correctly,
+`checkOrigin` can come back as an extra layer.
+
+### Sessions
+
+Opaque rows in Postgres, not JWTs: revocation has to be instant.
+
+| Property | Value |
+| --- | --- |
+| Cookie | `brotea_sesion`, `httpOnly`, `sameSite=lax`, `path=/`, `secure` only in a production build (`import.meta.env.PROD`) |
+| Stored | `sha256(token)` hex in `sessions.token_hash`. **The clear-text token exists only in the cookie** |
+| Token | 32 random bytes, base64url (`newToken()`) |
+| Lifetime | 30 days (`SESSION_DAYS`), **sliding**: every request that resolves a session rewrites `expires_at` and `last_seen_at` |
+| Comparison | `timingSafeEqual` on the decoded digests (`tokenMatches`) |
+| Recorded | `ip` and `user_agent` (truncated to 300 chars) at sign-in |
+
+A session resolves only if the row is not revoked, not expired **and the user is
+still `active`**. That last check is what makes suspension real: flipping
+`users.status` ejects someone who is already inside on their very next request,
+it does not merely stop them coming back.
+
+Revocation happens on sign-out (`POST /admin/salir` → `revoked_at = now()` for
+that token) and wholesale on a password reset (every open session of that user).
+
+### Sign-in
+
+`POST /admin/entrar` verifies against `users.password_hash` and answers with
+**one message for every failure** (`admin.entrar.mal`). Distinguishing "no such
+address" from "wrong password" would turn the form into a list of who writes for
+this outlet. For the same reason an unknown address still pays for a full scrypt
+verification against a throwaway hash, so response time does not leak the answer
+either.
+
+Both outcomes are audited (`login.ok` / `login.failed`), and a success also
+stamps `users.last_login_at`, mints a **fresh** CSRF cookie (reusing the old one
+leaves a valid token behind on a shared computer) and `303`s to `/admin`.
+
+Rate limits are in-memory, per process, sliding window — the same `RateLimiter`
+shape the newsletter uses, declared in `core.ts`:
+
+| Key | Limit |
+| --- | --- |
+| IP (first entry of `x-forwarded-for`, else `clientAddress`) | 10 per 5 min |
+| Email address | 5 per 15 min |
+
+Two keys, not one: otherwise a thousand IPs could hammer one account, or one
+attacker could lock a colleague out by failing their address from everywhere. A
+successful sign-in clears the account counter, so getting it right on the fifth
+try does not leave you locked out. Verifying a password is deliberately
+expensive CPU work — without a limit, the hash itself is the attacker's lever.
+
+### Passwords
+
+`scrypt` from `node:crypto`, not argon2: zero dependencies, no native module to
+compile, no added supply-chain surface.
+
+```
+scrypt$32768$8$1$<salt base64url>$<hash base64url>
+```
+
+Per-user 16-byte salt, and the parameters travel **with** the hash so the cost
+can be raised tomorrow without invalidating anybody's password. `verifyPassword`
+reads N, r and p back out of the stored string, and returns `false` (never
+throws) on anything malformed.
+
+**The `maxmem` caveat.** scrypt needs about `128·N·r` bytes — 33.5 MB with
+`N=2^15, r=8` — while node's default ceiling is 32 MB. Without raising it,
+*every* sign-in attempt throws `memory limit exceeded`. It is therefore computed
+from N and r themselves (`maxmemFor = 128·N·r·2`) rather than hardcoded, so
+raising the cost later cannot re-break it. A test caught this before production;
+it is the single most likely thing to break when someone tunes the parameters.
+
+Policy: **12 characters minimum, no symbol rules** (`passwordProblem`), plus a
+200-character ceiling — without it a 1 MB password is free CPU handed to
+whoever posts it. Requiring upper-case-number-symbol is what produces
+`P@ssw0rd1`, which is worse than a long phrase.
+
+### Invitations
+
+Registration is invitation-only; there is no open sign-up and no
+"first-user-becomes-owner" path — that shortcut is a classic vulnerability
+(whoever arrives first wins). The first owner is bootstrapped by inserting an
+invite row by hand: see [redaccion.md](./redaccion.md).
+
+```mermaid
+graph TD
+  O[Owner] -->|POST /admin/invitar| I[(invites)]
+  I -->|single-use link, 72 h| M[SMTP]
+  M -->|inbox| P[Journalist]
+  P -->|GET/POST /admin/aceptar?t=…| U[(users + authors)]
+  P -->|POST /admin/entrar| S[(sessions)]
+  S -->|httpOnly cookie| A[/admin]
+  P -->|POST /admin/perfil| AU[(authors + author_i18n)]
+  AU -->|content trigger| W[public author block]
+```
+
+- Only `owner` has `user:invite`, and the check is `can(user.role,
+  'user:invite')` **in the page**, returning `403`. Hiding the dashboard link is
+  cosmetics; whoever types the URL meets the `403`.
+- The invite row stores `sha256(token)`; the clear-text token only ever reaches
+  the mailbox, inside `<site>/admin/aceptar?t=…` built from `Astro.site`
+  (falling back to the request origin).
+- Expiry is 72 h (`INVITE_HOURS`) and use is single: `accepted_at` set means the
+  link is spent and returns `unknown` from then on.
+- **If SMTP fails the invitation still exists.** The page then shows
+  `admin.invitar.sin-correo` so the owner can resend — losing an invitation to
+  an SMTP hiccup would be the worse failure.
+- Accepting runs in **one transaction** that creates the public `authors` row
+  (id `aut-<slug of the byline>`, accent-stripped), the `users` row (`active`,
+  with the invited role and `author_id` pointing at that author) and marks the
+  invite accepted. Whoever joins a newsroom comes to sign their work.
+
+### Roles and permissions
+
+A table, not a ladder of `if`s, so it can be read at a glance and tested whole
+(`CAN` in `core.ts`). Roles do **not** inherit from one another.
+
+| Permission | journalist | editor | owner |
+| --- | --- | --- | --- |
+| `profile:own` | ✅ | ✅ | ✅ |
+| `story:own` | ✅ | ✅ | ✅ |
+| `story:any` | — | ✅ | ✅ |
+| `story:publish` | — | ✅ | ✅ |
+| `user:invite` | — | — | ✅ |
+| `user:role` | — | — | ✅ |
+
+`story:*` are declared but nothing consumes them yet — story editing is a later
+feature. `user:role` likewise has no page today. Checks are always server-side
+and per route: the dashboard filters its links with `can()` for looks, and the
+page itself re-checks and answers `403`.
+
+### Profile editing
+
+`/admin/perfil` writes to the **same tables the public site reads**
+(`authors`, `author_i18n`), so a change shows up in the author block
+immediately: the content trigger bumps `content_version` and the snapshot
+refreshes. One locale at a time (`?idioma=<code>`, validated against `LOCALES`),
+which is exactly why translations are rows and not a `jsonb` column — editing
+English cannot overwrite Spanish.
+
+A user whose `author_id` is `null` gets `admin.perfil.sin-autor` instead of a
+silent no-op: they can sign in, but they sign nothing.
+
+### Audit log
+
+`audit(action, actorId, payload, ip)` writes to `audit_log`. It **never breaks
+the action it audits** — a failed insert is logged and swallowed — and the actor
+is nullable on purpose, because a failed sign-in has no user and is exactly the
+kind of thing worth recording.
+
+Actions written today: `login.ok`, `login.failed`, `logout`, `user.invited`,
+`user.accepted_invite`, `profile.updated`, `password.reset`.
+
+### Data model
+
+`src/migrations/003_auth.sql`, applied at boot like the others (see
+[deployment.md](./deployment.md#migrations)). It needs `citext`, already created
+by `002_newsletter`.
+
+| Table | Columns |
+| --- | --- |
+| `users` | `id` PK, `email` `citext` UNIQUE, `password_hash` (the `scrypt$…` string), `role` (`journalist\|editor\|owner`, default `journalist`), `status` (`invited\|active\|suspended`, default `invited`), `author_id` → `authors(id)` `ON DELETE SET NULL`, `created_at`, `updated_at`, `last_login_at` |
+| `invites` | `id` PK, `email` `citext`, `role`, `token_hash` UNIQUE, `invited_by` → `users(id)`, `expires_at`, `accepted_at`, `created_at`; partial index on `email WHERE accepted_at IS NULL` |
+| `sessions` | `id` PK, `user_id` → `users(id)` `ON DELETE CASCADE`, `token_hash` UNIQUE, `created_at`, `last_seen_at`, `expires_at`, `revoked_at`, `ip`, `user_agent`; partial index on `user_id WHERE revoked_at IS NULL` |
+| `password_resets` | `id` PK, `user_id` → `users(id)` `ON DELETE CASCADE`, `token_hash` UNIQUE, `expires_at`, `used_at`, `created_at` |
+| `audit_log` | `id` PK, `actor_id` → `users(id)` `ON DELETE SET NULL` (nullable), `action`, `entity`, `entity_id`, `payload jsonb`, `ip`, `at`; index on `at DESC` |
+
+`users.author_id` is the join between the private account and the public
+by-line, and it is deliberately loose in both directions: **a user without an
+author can sign in but signs nothing; an author without a user is a historical
+by-line** that keeps working after the person leaves. Deleting an author does
+not delete the account, it just unlinks it.
+
+The migration creates **no user and no path to create one** without an
+invitation.
+
+### Not implemented yet
+
+The code carries more than the interface exposes. Documented so nobody assumes
+otherwise:
+
+- **Password reset has no page.** `requestReset()` / `applyReset()` exist in
+  `store.ts`, `sendReset()` exists in `mail.ts`, the `password_resets` table
+  exists and `/admin/restablecer` is whitelisted as public in the middleware —
+  but there is no `src/pages/admin/restablecer.astro`, so the route `404`s and
+  nothing calls those functions. A forgotten password is fixed today by issuing
+  a new invitation (accepting it re-sets the password for that address).
+- **Suspension has no interface.** The enforcement is real (a session dies as
+  soon as `users.status` stops being `active`), but the only way to suspend
+  someone is `UPDATE users SET status='suspended'` in the database.
+- **Changing someone's role has no interface** either, though `user:role` is in
+  the permission table.
+- **Story editing** (`story:own`, `story:any`, `story:publish`) belongs to a
+  later feature; the dashboard says so on the page.
+
 ## Newsroom write path
 
 The write side of the same tables the snapshot reads. It is not behind the
@@ -513,6 +778,30 @@ They resolve the locale like every other page, so `/xx/boletin/baja` 404s.
 | SMTP not configured (`SMTP_HOST`/`SMTP_USER`/`SMTP_PASS` missing) | `sendConfirmation` logs a warning, returns `false`, the row stays `pending` and the reader still gets `202` |
 | SMTP configured but failing | Same: the error is logged, never thrown. The mail provider's bad day is not the reader's fault |
 | No `DATABASE_URL` | `503` and a logged error — unlike the content layer, there is no seed to fall back on |
+
+## Mail transport
+
+`src/lib/mail/transport.ts` is **the only module in the app that talks to
+SMTP**. Both senders are thin copy wrappers on top of it:
+
+```
+src/lib/mail/transport.ts     nodemailer transport, configured(), sendMail()
+src/lib/newsletter/mail.ts    sendConfirmation()  → mail.confirm.* keys
+src/lib/auth/mail.ts          sendInvite(), sendReset() → mail.invite.* / mail.reset.* keys
+```
+
+`sendMail({ to, subject, lines, ctaText?, ctaUrl?, footer? })` builds the plain
+text (`lines.join('\n')`) and an escaped HTML courtesy version, and returns a
+`boolean`. **It never throws**: a mail provider having a bad day cannot become
+an error page for someone who filled in a form and can do nothing about it. The
+caller decides what to tell them — the invite page, for instance, reports
+`admin.invitar.sin-correo` and keeps the invitation row so the owner can resend
+it.
+
+One transport and not one per feature: two SMTP configurations in the same app
+is how one of them silently stops working. The variables (`SMTP_HOST`,
+`SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`) are read here and nowhere
+else — see [deployment.md](./deployment.md#runtime-env-smtp).
 
 ## Copy vs content
 

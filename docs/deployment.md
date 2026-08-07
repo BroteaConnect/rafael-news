@@ -28,9 +28,9 @@ curl -i localhost:8080/healthz   # 200
 
 ## Runtime env: `DATABASE_URL`
 
-The Postgres connection string, used by the editorial content **and** by the
-newsletter. **Runtime variable, never a build ARG** — a credential is not baked
-into an image.
+The Postgres connection string, used by the editorial content, by the newsletter
+**and** by the newsroom (`/admin`). **Runtime variable, never a build ARG** — a
+credential is not baked into an image.
 
 ```bash
 docker run -p 8080:4321 -e DATABASE_URL='postgres://…' rafael-news
@@ -49,19 +49,33 @@ the in-memory snapshot. A database restart is not a public incident — only
 publishing stops until the connection comes back (the listener retries every
 5s). See [architecture.md](./architecture.md#content-layer).
 
-The newsletter is the one part that does need the database live: without
-`DATABASE_URL` `POST /api/newsletter` answers `503` and logs it, because there
-is nowhere to record a subscription and no seed to pretend with.
+The newsletter and the newsroom are the parts that do need the database live:
+
+- without `DATABASE_URL`, `POST /api/newsletter` answers `503` and logs it,
+  because there is nowhere to record a subscription and no seed to pretend with;
+- without it, `/admin/entrar` shows `admin.entrar.sin-base` and nobody can sign
+  in — there are no users, no sessions and no local fallback for either. The
+  public site keeps serving normally.
+- if the database is set but momentarily unreachable, an existing session cannot
+  be resolved: the middleware logs `[auth] no se pudo leer la sesión` and treats
+  the request as signed out (a `302` to `/admin/entrar`), never a `500`.
 
 ## Migrations
 
 There is no migration command and no console in the runtime image. `migrate()`
 in `src/lib/content/db.ts` runs every entry of its `MIGRATIONS` list at boot —
-today `['001_content', '002_newsletter']` — so **deploying is applying the
-migration**. `002_newsletter.sql` creates the `newsletter_subscribers` table and
-its indexes, and needs `CREATE EXTENSION IF NOT EXISTS citext`: the database
-role must be allowed to create the extension, or the boot log shows the
-migration failing.
+today `['001_content', '002_newsletter', '003_auth']` — so **deploying is
+applying the migration**. `002_newsletter.sql` creates the
+`newsletter_subscribers` table and its indexes, and needs `CREATE EXTENSION IF
+NOT EXISTS citext`: the database role must be allowed to create the extension,
+or the boot log shows the migration failing.
+
+`003_auth.sql` (feature 60) adds the newsroom's tables — `users`, `invites`,
+`sessions`, `password_resets`, `audit_log` — and reuses `citext` for the email
+columns, so it depends on `002_newsletter` having created the extension and on
+`001_content` having created `authors` (`users.author_id` references it).
+It creates **no user and no way to create the first one**: see
+[the first owner](#first-owner-bootstrap).
 
 Every migration is re-executed on every boot, which is why each one *must* be
 idempotent: they use `CREATE TABLE IF NOT EXISTS`, `CREATE EXTENSION IF NOT
@@ -95,9 +109,9 @@ that a network blip never marks a healthy app as down.
 
 ## Runtime env: SMTP
 
-The confirmation email goes out over SMTP — not a REST API: Brevo's REST
-endpoint answers `401` from unlisted IPs while SMTP keeps working. These are
-**runtime** variables, never build ARGs.
+Every email — the newsletter confirmation and the newsroom's invitations — goes
+out over SMTP, not a REST API: Brevo's REST endpoint answers `401` from unlisted
+IPs while SMTP keeps working. These are **runtime** variables, never build ARGs.
 
 | Variable | Required | Default | Used for |
 | --- | --- | --- | --- |
@@ -105,14 +119,29 @@ endpoint answers `401` from unlisted IPs while SMTP keeps working. These are
 | `SMTP_USER` | yes | — | SMTP user |
 | `SMTP_PASS` | yes | — | SMTP password |
 | `SMTP_PORT` | no | `587` | Port. `465` switches the transport to implicit TLS (`secure: true`); anything else uses STARTTLS |
-| `MAIL_FROM` | no | `no-reply@brotea.dev` | `From:` of the confirmation email |
+| `MAIL_FROM` | no | `no-reply@brotea.dev` | `From:` of every outgoing email |
 
-`src/lib/newsletter/mail.ts` considers mail configured only when `SMTP_HOST`,
-`SMTP_USER` and `SMTP_PASS` are all set. **If they are not, nothing breaks
-loudly**: the signup row is still written, the API still answers `202`, and the
-log carries `[boletin] SMTP sin configurar: no se envía la confirmación` — the
-subscriber simply stays `pending` for ever. Same for a send that fails: logged,
-never thrown.
+Since feature 60 they are read in exactly one place,
+`src/lib/mail/transport.ts`, which both `newsletter/mail.ts` and `auth/mail.ts`
+send through — one SMTP configuration for the whole app. Mail counts as
+configured only when `SMTP_HOST`, `SMTP_USER` and `SMTP_PASS` are all set.
+
+**If they are not, nothing breaks loudly**: the transport logs `[correo] SMTP
+sin configurar: no se envía "<subject>"` and returns `false`.
+
+| Sender | Consequence of a failed or skipped send |
+| --- | --- |
+| Newsletter confirmation | The signup row is still written, the API still answers `202`, and the subscriber stays `pending` for ever |
+| Newsroom invitation | The invite row still exists (72 h, unused); the page tells the owner it did not go out (`admin.invitar.sin-correo`) so they can resend, or the link can be handed over by another channel |
+
+Same for a send that fails: logged, never thrown.
+
+There are **no new environment variables** for the newsroom. Sessions,
+invitations and password hashing derive everything from the database and
+`node:crypto` — there is no signing secret to set or rotate. The one behaviour
+tied to the build is the `Secure` flag on the session and CSRF cookies, which
+comes from `import.meta.env.PROD`: the Docker image is a production build, so
+the flag is on in every deployed environment and off in `npm run dev`.
 
 ```bash
 docker run -p 8080:4321 \
@@ -122,8 +151,9 @@ docker run -p 8080:4321 \
   rafael-news
 ```
 
-No variable carries the confirmation link's base URL: it comes from `site` in
-`astro.config.mjs`, falling back to the request's own origin.
+No variable carries the base URL of the links in those emails — confirmation,
+unsubscribe or invitation: they all come from `site` in `astro.config.mjs`,
+falling back to the request's own origin.
 
 `PUBLIC_REQUIREMENTS_ENDPOINT` is **gone**. The signup no longer travels to any
 third party, so requiring an external URL in the bundle was requiring something
@@ -134,6 +164,26 @@ form has something to talk to, but now checks the route itself:
 RUN grep -rq 'api/newsletter' dist/server/
 ```
 
+## First owner bootstrap
+
+A fresh database has **no users**, and there is no route that creates one
+without an invitation — "if there are no users, the first one becomes owner" is
+a classic vulnerability (whoever arrives first wins). After the first deploy
+that applies `003_auth`, the first owner is created by inserting an invitation
+directly in the database, an action that already requires server access:
+
+```bash
+TOKEN=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
+HASH=$(node -e "console.log(require('crypto').createHash('sha256').update('$TOKEN').digest('hex'))")
+psql "$DATABASE_URL" -c "INSERT INTO invites (email, role, token_hash, expires_at)
+  VALUES ('who.runs.it@example.com', 'owner', '$HASH', now() + interval '72 hours')"
+echo "https://rafael-news.brotea.dev/admin/aceptar?t=$TOKEN"
+```
+
+The full procedure, including what to do afterwards, is in
+[redaccion.md](./redaccion.md#the-first-owner-bootstrap). Nothing in the deploy
+pipeline runs it: it is a one-off, per environment.
+
 ## Coolify setup
 
 - Build pack: `dockerfile`.
@@ -143,7 +193,8 @@ RUN grep -rq 'api/newsletter' dist/server/
 - Exposed port: **4321** (was 80 under nginx).
 - Runtime env vars, never build ones: `DATABASE_URL` pointing at the app's
   Postgres service, plus `SMTP_HOST` / `SMTP_USER` / `SMTP_PASS` (and
-  optionally `SMTP_PORT`, `MAIL_FROM`) for the newsletter's confirmation email.
+  optionally `SMTP_PORT`, `MAIL_FROM`) for the newsletter's confirmation email
+  and the newsroom's invitations. Nothing else: the newsroom adds no variables.
 - Source: `BroteaConnect/rafael-news`, branch `main`.
 
 ## URLs
@@ -157,9 +208,14 @@ origin: canonical tags, hreflang alternates, `/rss.xml` and `/sitemap.xml` all
 build their absolute URLs from it. Both feeds are generated per request from the
 content snapshot, so there is no build step or cron to keep them fresh.
 
+`/admin/*` is the newsroom, unprefixed and single-language, and it is excluded
+from all of that: `Cache-Control: no-store` plus `X-Robots-Tag: noindex,
+nofollow` on every response, so it never lands in a shared cache or a search
+result. A CDN or proxy in front of the app must not be configured to cache it.
+
 Public HTML responses carry a weak `ETag` derived from the content version and
 `Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=86400`
-(`/healthz` and `/api/*` excluded). A shared cache in front of the app absorbs
+(`/healthz`, `/api/*` and `/admin/*` excluded). A shared cache in front of the app absorbs
 traffic, keeps serving while the origin restarts, and stops serving stale HTML
 within a minute of a publication.
 
