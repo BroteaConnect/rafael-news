@@ -8,7 +8,8 @@ algo que **falla una PR**.
 
 ## Qué hace
 
-Arranca el servidor **real ya construido** y le hace preguntas por HTTP. Se
+Arranca el servidor **real ya construido** y le hace preguntas por HTTP —
+`npm run build` antes, o no hay `dist/` que arrancar. Se
 lanza **sin `DATABASE_URL` a propósito**: así sirve la semilla, y la medida es
 la misma hoy que dentro de seis meses — un gate cuyo resultado depende de
 cuántas noticias haya publicadas ese día no sirve para comparar nada.
@@ -20,6 +21,7 @@ cuántas noticias haya publicadas ese día no sirve para comparar nada.
 | `no-store` + `noindex` en `/admin` | La redacción no va a una caché compartida ni a un buscador |
 | `/healthz` sin `ETag` | Un estado de salud cacheado no es un estado de salud |
 | Un solo `h1`, sin saltos de nivel | Quien navega por encabezados se pierde una sección sin enterarse |
+| El `<html>` declara idioma | Sin `lang` el lector de pantalla pronuncia la página en el idioma equivocado |
 | Todas las imágenes con `alt` | — |
 | Todo control con etiqueta (`for`, envolvente o `aria-label`) | Las tres formas son válidas |
 | La portada no referencia nada de `/admin` | El paquete de la redacción no puede filtrarse al público |

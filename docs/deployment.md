@@ -166,6 +166,18 @@ within a minute of a publication.
 ## Release process
 
 Production deploys are triggered by the Brotea factory, not by hand: changes
-reach `main` only through a PR that is auto-merged after green CI — green CI is
-the only gate. After merge, the factory (re)deploys the Coolify application
-from `main`.
+reach `main` only through a PR that is auto-merged after green CI — CI is the
+only gate. After merge, the factory (re)deploys the Coolify application from
+`main`.
+
+**Two workflows must be green, not one:**
+
+| Workflow | Runs | Owner |
+| --- | --- | --- |
+| `.github/workflows/ci.yml` | `npm test` (locale/content tests, `astro check`, build) and the docker job that builds the real image and curls its [service contract](#service-contract) | the factory catalog — **generated**, never edit here |
+| `.github/workflows/calidad-web.yml` | `npm ci` → `npm run build` → `npm run gate:web`: page weight budgets, cache headers and structural accessibility against the real built server ([gate-web.md](./gate-web.md)) | this repo |
+
+The gate lives in its own file precisely because `ci.yml` is materialised by
+`brotea quality sync`: steps added there would disappear on the next fleet
+migration, and the gate would stop running without anyone noticing. Both
+workflows trigger on `pull_request` and on `push` to `main`.
