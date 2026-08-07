@@ -78,82 +78,103 @@ const vistaPrevia = renderMarkdown(texto.bodyMd);
     ))}
   </nav>
 
-  <form method="post" class="formulario">
+  {/* Dos columnas: a la izquierda se escribe, a la derecha se decide. Antes
+      había que bajar por un textarea de 18 filas y la vista previa entera para
+      llegar al botón de publicar — el que más se usa, el más lejos. */}
+  <form method="post" class="editor">
     <input type="hidden" name="csrf" value={csrf} />
     <input type="hidden" name="accion" value="guardar" />
-    <label>
-      {t(locale, 'admin.noticias.titular')}
-      <input type="text" name="titulo" maxlength="200" value={texto.title} />
-    </label>
-    <label>
-      {t(locale, 'admin.noticias.entradilla')}
-      <textarea name="entradilla" rows="2" maxlength="400">{texto.standfirst}</textarea>
-    </label>
-    <div class="fila">
+
+    <div class="principal">
       <label>
-        {t(locale, 'admin.noticias.tema')}
-        <select name="tema">
-          {temas.map((tp) => <option value={tp.id} selected={tp.id === draft.topicId}>{tp.name}</option>)}
-        </select>
+        {t(locale, 'admin.noticias.titular')}
+        <input type="text" name="titulo" maxlength="200" value={texto.title} />
       </label>
       <label>
-        {t(locale, 'admin.noticias.relevancia')}
-        <select name="relevancia">
-          {['high', 'medium', 'low'].map((r) => (
-            <option value={r} selected={r === draft.relevance}>{t(locale, `relevance.${r}`)}</option>
-          ))}
-        </select>
+        {t(locale, 'admin.noticias.entradilla')}
+        <textarea name="entradilla" rows="2" maxlength="400">{texto.standfirst}</textarea>
       </label>
+      <label>
+        {t(locale, 'admin.noticias.cuerpo')}
+        <textarea name="cuerpo" rows="18">{texto.bodyMd}</textarea>
+        <small>{t(locale, 'admin.noticias.ayuda-markdown')}</small>
+      </label>
+
+      {/* La vista previa usa el MISMO renderizado que se guarda, no una
+          aproximación: lo que se ve aquí es exactamente lo que se publica. */}
+      <section class="previa" aria-labelledby="previa-title">
+        <h2 id="previa-title" class="grupo">{t(locale, 'admin.noticias.previa')}</h2>
+        {vistaPrevia
+          ? <div class="cuerpo" set:html={vistaPrevia} />
+          : <p class="vacio">{t(locale, 'admin.noticias.previa-vacia')}</p>}
+      </section>
     </div>
-    <label>
-      {t(locale, 'admin.noticias.cuerpo')}
-      <textarea name="cuerpo" rows="18">{texto.bodyMd}</textarea>
-      <small>{t(locale, 'admin.noticias.ayuda-markdown')}</small>
-    </label>
-    <button class="btn" type="submit">{t(locale, 'admin.noticias.guardar')}</button>
-  </form>
 
-  {/* Vista previa del cuerpo tal y como lo verá el lector: es el MISMO
-      renderizado que se guarda, no una aproximación. */}
-  <section class="previa" aria-labelledby="previa-title">
-    <h2 id="previa-title" class="grupo">{t(locale, 'admin.noticias.previa')}</h2>
-    {vistaPrevia
-      ? <div class="cuerpo" set:html={vistaPrevia} />
-      : <p class="vacio">{t(locale, 'admin.noticias.previa-vacia')}</p>}
-  </section>
+    <aside class="rail" aria-label={t(locale, 'admin.noticias.publicacion')}>
+      <div class="panel">
+        <label>
+          {t(locale, 'admin.noticias.tema')}
+          <select name="tema">
+            {temas.map((tp) => <option value={tp.id} selected={tp.id === draft.topicId}>{tp.name}</option>)}
+          </select>
+        </label>
+        <label>
+          {t(locale, 'admin.noticias.relevancia')}
+          <select name="relevancia">
+            {['high', 'medium', 'low'].map((r) => (
+              <option value={r} selected={r === draft.relevance}>{t(locale, `relevance.${r}`)}</option>
+            ))}
+          </select>
+        </label>
+        <button class="btn" type="submit">{t(locale, 'admin.noticias.guardar')}</button>
+      </div>
 
-  <section class="publicacion" aria-labelledby="pub-title">
-    <h2 id="pub-title" class="grupo">{t(locale, 'admin.noticias.publicacion')}</h2>
-    <p class="estado-actual">
-      {t(locale, `admin.noticias.${draft.status === 'published' ? 'publicada' : 'borrador'}`)}
-      {draft.status === 'published' && (
-        <a class="ver" href={localePath(DEFAULT_LOCALE, `/noticia/${draft.slug}`)}>{t(locale, 'admin.noticias.ver')}</a>
-      )}
-    </p>
-    {puedePublicar ? (
-      <div class="acciones">
-        {draft.status !== 'published' ? (
-          <form method="post">
-            <input type="hidden" name="csrf" value={csrf} />
-            <input type="hidden" name="accion" value="publicar" />
-            <label class="check">
-              <input type="checkbox" name="destacada" value="si" checked={draft.lead} />
-              {t(locale, 'admin.noticias.marcar-destacada')}
-            </label>
-            <button class="btn" type="submit">{t(locale, 'admin.noticias.publicar')}</button>
-          </form>
+      <div class="panel">
+        <p class="estado-actual">
+          <span class={`estado ${draft.status}`}>
+            {t(locale, `admin.noticias.${draft.status === 'published' ? 'publicada' : 'borrador'}`)}
+          </span>
+          {draft.status === 'published' && (
+            <a href={localePath(DEFAULT_LOCALE, `/noticia/${draft.slug}`)}>{t(locale, 'admin.noticias.ver')}</a>
+          )}
+        </p>
+
+        {puedePublicar ? (
+          draft.status !== 'published' ? (
+            <>
+              {/* `form=` deja que un control viva aquí y pertenezca a otro
+                  formulario: anidar <form> es HTML inválido, y esto evita el
+                  JavaScript que haría falta si no. */}
+              <label class="check">
+                <input type="checkbox" name="destacada" value="si" form="publicar" checked={draft.lead} />
+                {t(locale, 'admin.noticias.marcar-destacada')}
+              </label>
+              <button class="btn" type="submit" form="publicar">{t(locale, 'admin.noticias.publicar')}</button>
+            </>
+          ) : (
+            <button class="btn btn-ghost" type="submit" form="despublicar">{t(locale, 'admin.noticias.despublicar')}</button>
+          )
         ) : (
-          <form method="post">
-            <input type="hidden" name="csrf" value={csrf} />
-            <input type="hidden" name="accion" value="despublicar" />
-            <button class="btn btn-ghost" type="submit">{t(locale, 'admin.noticias.despublicar')}</button>
-          </form>
+          <p class="nota">{t(locale, 'admin.noticias.solo-editor')}</p>
         )}
       </div>
-    ) : (
-      <p class="vacio">{t(locale, 'admin.noticias.solo-editor')}</p>
-    )}
-  </section>
+    </aside>
+  </form>
+
+  {/* Los formularios de publicación, sin controles visibles: sus botones están
+      en el rail y apuntan aquí por id. */}
+  {puedePublicar && (
+    <>
+      <form id="publicar" method="post" hidden>
+        <input type="hidden" name="csrf" value={csrf} />
+        <input type="hidden" name="accion" value="publicar" />
+      </form>
+      <form id="despublicar" method="post" hidden>
+        <input type="hidden" name="csrf" value={csrf} />
+        <input type="hidden" name="accion" value="despublicar" />
+      </form>
+    </>
+  )}
 </Admin>
 
 <style>
@@ -165,8 +186,13 @@ const vistaPrevia = renderMarkdown(texto.bodyMd);
     color: var(--text); text-decoration: none; text-transform: uppercase; font-size: 0.8125rem; font-weight: 600;
   }
   .idiomas a[aria-current='page'] { background: var(--primary); color: var(--primary-contrast); border-color: var(--primary); }
-  .formulario { display: grid; gap: var(--space-3); }
-  .fila { display: grid; gap: var(--space-3); grid-template-columns: 1fr 1fr; }
+
+  /* Una sola columna en pantalla estrecha: el rail va detrás del texto, que es
+     el orden en que se trabaja cuando no cabe al lado. */
+  .editor { display: grid; gap: var(--space-5); align-items: start; }
+  @media (min-width: 940px) { .editor { grid-template-columns: minmax(0, 1fr) 300px; } }
+
+  .principal { display: grid; gap: var(--space-3); min-width: 0; }
   label { display: grid; gap: var(--space-1); font-size: 0.9375rem; }
   input[type='text'], textarea, select {
     padding: var(--space-2) var(--space-3); font: inherit; color: var(--text);
@@ -175,15 +201,28 @@ const vistaPrevia = renderMarkdown(texto.bodyMd);
   input[type='text'], select { min-height: 44px; }
   textarea[name='cuerpo'] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9375rem; line-height: 1.6; }
   small { color: var(--muted); }
-  .grupo { font-family: var(--font-sans); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-block: var(--space-5) var(--space-3); }
+
+  /* Pegajoso: publicar es lo que más se usa y no puede quedarse arriba del
+     todo mientras se escribe un cuerpo largo. */
+  .rail { display: grid; gap: var(--space-3); }
+  @media (min-width: 940px) { .rail { position: sticky; top: 76px; } }
+  .panel {
+    display: grid; gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .estado-actual { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin: 0; }
+  .estado { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 700; }
+  .estado.published { color: var(--ok-strong); }
+  .check { display: flex; flex-direction: row; align-items: flex-start; gap: var(--space-2); font-size: 0.875rem; }
+  .nota { margin: 0; color: var(--muted); font-size: 0.875rem; }
+
+  .grupo { font-family: var(--font-sans); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-block: var(--space-4) var(--space-2); }
   .previa .cuerpo { max-width: var(--measure); padding: var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
   .previa .cuerpo :global(p) { margin-block: 0 var(--space-3); }
   .previa .cuerpo :global(h2), .previa .cuerpo :global(h3) { font-size: 1.25rem; margin-block: var(--space-4) var(--space-2); }
   .previa .cuerpo :global(blockquote) { margin: var(--space-3) 0; padding-inline-start: var(--space-3); border-inline-start: 3px solid var(--primary); color: var(--muted); }
   .vacio { color: var(--muted); }
-  .acciones { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; }
-  .check { display: flex; flex-direction: row; align-items: center; gap: var(--space-2); margin-block-end: var(--space-2); }
-  .estado-actual { display: flex; gap: var(--space-3); align-items: center; }
   .ok { padding: var(--space-3); border: 1px solid var(--ok-strong); border-radius: var(--radius); color: var(--ok-strong); }
   .error { padding: var(--space-3); border: 1px solid var(--danger-strong); border-radius: var(--radius); color: var(--danger-strong); }
 </style>

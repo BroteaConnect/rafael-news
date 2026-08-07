@@ -1,6 +1,6 @@
 ---
 import Layout from '../../layouts/Layout.astro';
-import StoryGrid from '../../components/StoryGrid.astro';
+import StoryDays from '../../components/StoryDays.astro';
 import { getArticles } from '../../lib/content/store';
 import { t } from '../../lib/i18n';
 import { resolveLocale } from '../../lib/route';
@@ -15,7 +15,7 @@ const stories = await getArticles(locale);
   <section class="section container" aria-labelledby="news-title">
     <h1 class="page-title" id="news-title">{t(locale, 'nav.news')}</h1>
     <p class="lede">{t(locale, 'news.description')}</p>
-    <StoryGrid locale={locale} stories={stories} titulo={t(locale, 'nav.news')} />
+    <StoryDays locale={locale} stories={stories} />
   </section>
 </Layout>
 

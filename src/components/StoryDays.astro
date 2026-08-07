@@ -1,0 +1,67 @@
+---
+import type { StoryView } from '../lib/content/types';
+import ArticleCard from './ArticleCard.astro';
+import { dayLabel, groupByDay } from '../lib/dates';
+import { intlOf, t } from '../lib/i18n';
+
+interface Props { locale: string; stories: StoryView[] }
+const { locale, stories } = Astro.props;
+
+// Un archivo de noticias tiene ritmo: publicamos 3-5 al día. Una lista plana
+// ordenada por fecha esconde ese ritmo; agrupada por día se ve de un vistazo
+// qué salió cada jornada y si hoy ya hay algo.
+//
+// El día se calcula en la zona del medio (src/lib/dates.ts): en UTC, lo
+// publicado a las 23:30 de Madrid aparecería bajo el día siguiente.
+const grupos = groupByDay(stories, (s) => s.publishedAt);
+const etiqueta = (dia: string) => dayLabel(intlOf(locale), dia, (clave) => t(locale, clave));
+---
+
+{grupos.map((grupo) => (
+  <section class="dia" aria-labelledby={`dia-${grupo.dia}`}>
+    {/* Pegajosa: al bajar por el archivo siempre se sabe de qué día es lo que
+        se está leyendo, sin volver a subir. */}
+    <h2 class="cabecera" id={`dia-${grupo.dia}`}>
+      <time datetime={grupo.dia}>{etiqueta(grupo.dia)}</time>
+      <span class="cuantas">{t(locale, 'topics.count', { count: grupo.items.length })}</span>
+    </h2>
+    <ul class="cards">
+      {grupo.items.map((story) => (
+        <li><ArticleCard locale={locale} story={story} fecha="hora" /></li>
+      ))}
+    </ul>
+  </section>
+))}
+
+<style>
+  .dia + .dia { margin-block-start: var(--space-6); }
+  .cabecera {
+    position: sticky;
+    /* Bajo la cabecera del sitio, que también es pegajosa: si no, se solapan. */
+    top: 56px;
+    z-index: 10;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+    margin: 0 0 var(--space-3);
+    padding-block: var(--space-2);
+    background: var(--bg);
+    border-block-end: 1px solid var(--border);
+    font-family: var(--font-sans);
+    font-size: 0.8125rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  @media (min-width: 900px) { .cabecera { top: 64px; } }
+  .cuantas { font-weight: 500; letter-spacing: 0; text-transform: none; }
+  .cards {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: var(--space-4);
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  }
+</style>
