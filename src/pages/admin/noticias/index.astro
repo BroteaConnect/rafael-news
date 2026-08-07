@@ -2,8 +2,9 @@
 import Admin from '../../../layouts/Admin.astro';
 import { CSRF_COOKIE, can } from '../../../lib/auth/core';
 import { createStory, listStories } from '../../../lib/newsroom/store';
-import { DEFAULT_LOCALE, t } from '../../../lib/i18n';
+import { dayLabel, groupByDay } from '../../../lib/dates';
 import { TOPICS } from '../../../lib/content/types';
+import { DEFAULT_LOCALE, intlOf, localePath, t } from '../../../lib/i18n';
 
 export const prerender = false;
 const locale = DEFAULT_LOCALE;
@@ -17,9 +18,15 @@ if (Astro.request.method === 'POST') {
 }
 
 const stories = await listStories(locale);
-const mias = stories.filter((s) => s.authorId === user.authorId);
-const otras = stories.filter((s) => s.authorId !== user.authorId);
 const puedeVerTodas = can(user.role, 'story:any');
+const visibles = puedeVerTodas ? stories : stories.filter((s) => s.authorId === user.authorId);
+
+// Agrupadas por día, como la web pública: la redacción piensa en jornadas
+// —«¿qué hemos sacado hoy?»—, no en una lista continua ordenada por fecha.
+// Los borradores sin publicar se agrupan por su última edición, que es la
+// fecha que les importa mientras no salen.
+const grupos = groupByDay(visibles, (s) => s.publishedAt ?? s.updatedAt);
+const etiqueta = (dia: string) => dayLabel(intlOf(locale), dia, (clave) => t(locale, clave));
 const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
 
 const ESTADO = {
@@ -37,52 +44,107 @@ const ESTADO = {
     </form>
   </div>
 
-  <h2 class="grupo">{t(locale, 'admin.noticias.mias')}</h2>
-  {mias.length === 0 && <p class="vacio">{t(locale, 'admin.noticias.ninguna')}</p>}
-  <ul class="lista">
-    {mias.map((s) => (
-      <li>
-        <a href={`/admin/noticias/${s.id}`}>{s.title}</a>
-        <span class={`estado ${s.status}`}>{t(locale, ESTADO[s.status])}</span>
-        {s.lead && <span class="destacada">{t(locale, 'admin.noticias.destacada')}</span>}
-      </li>
-    ))}
-  </ul>
-
-  {puedeVerTodas && otras.length > 0 && (
-    <>
-      <h2 class="grupo">{t(locale, 'admin.noticias.otras')}</h2>
+  {visibles.length === 0 ? (
+    /* Un vacío que dice qué hacer, no solo que no hay nada. */
+    <section class="vacio">
+      <p class="grande">{t(locale, 'admin.noticias.ninguna')}</p>
+      <p>{t(locale, 'admin.noticias.ninguna-ayuda')}</p>
+      <form method="post">
+        <input type="hidden" name="csrf" value={csrf} />
+        <button class="btn" type="submit">{t(locale, 'admin.noticias.nueva')}</button>
+      </form>
+    </section>
+  ) : grupos.map((grupo) => (
+    <section class="dia" aria-labelledby={`dia-${grupo.dia}`}>
+      <h2 class="cabecera-dia" id={`dia-${grupo.dia}`}>
+        <time datetime={grupo.dia}>{etiqueta(grupo.dia)}</time>
+        <span class="cuantas">{t(locale, 'topics.count', { count: grupo.items.length })}</span>
+      </h2>
       <ul class="lista">
-        {otras.map((s) => (
-          <li>
-            <a href={`/admin/noticias/${s.id}`}>{s.title}</a>
-            <span class="autor">{s.authorName}</span>
-            <span class={`estado ${s.status}`}>{t(locale, ESTADO[s.status])}</span>
-            {s.lead && <span class="destacada">{t(locale, 'admin.noticias.destacada')}</span>}
+        {grupo.items.map((s) => (
+          <li class={`fila ${s.status}`}>
+            {/* La fila ENTERA es el enlace al editor (enlace estirado), y las
+                acciones frecuentes viven dentro sin ser un segundo enlace al
+                mismo sitio: quien navega con teclado no tiene que pasar por
+                tres enlaces idénticos para salir de una fila. */}
+            <h3 class="titulo"><a class="estirado" href={`/admin/noticias/${s.id}`}>{s.title}</a></h3>
+            <p class="meta">
+              <span class={`estado ${s.status}`}>{t(locale, ESTADO[s.status])}</span>
+              {s.lead && <span class="destacada">{t(locale, 'admin.noticias.destacada')}</span>}
+              {puedeVerTodas && s.authorId !== user.authorId && <span class="autor">{s.authorName}</span>}
+            </p>
+            {s.status === 'published' && (
+              <a class="accion" href={localePath(DEFAULT_LOCALE, `/noticia/${s.slug}`)}>
+                {t(locale, 'admin.noticias.ver')}
+              </a>
+            )}
           </li>
         ))}
       </ul>
-    </>
-  )}
+    </section>
+  ))}
 </Admin>
 
 <style>
   .cabecera { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
   h1 { font-size: 1.75rem; }
-  .grupo { font-family: var(--font-sans); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-block: var(--space-5) var(--space-3); }
-  .vacio { color: var(--muted); }
-  .lista { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
-  .lista li {
-    display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
-    padding: var(--space-3); background: var(--surface);
-    border: 1px solid var(--border); border-radius: var(--radius);
+
+  .dia + .dia { margin-block-start: var(--space-5); }
+  .cabecera-dia {
+    position: sticky;
+    top: 60px;                      /* la barra de la redacción mide 60 */
+    z-index: 10;
+    display: flex; align-items: baseline; gap: var(--space-3);
+    margin: var(--space-5) 0 var(--space-2);
+    padding-block: var(--space-2);
+    background: var(--bg);
+    border-block-end: 1px solid var(--border);
+    font-family: var(--font-sans); font-size: 0.8125rem; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
   }
-  .lista a { color: var(--text); text-decoration: none; font-family: var(--font-display); font-size: 1.0625rem; flex: 1; }
-  .lista a:hover { color: var(--primary); }
-  .autor { color: var(--muted); font-size: 0.8125rem; }
-  /* El estado se distingue por PALABRA además de por color: un borrador y una
-   * publicada no se pueden diferenciar solo por un tono. */
+  .cuantas { font-weight: 500; letter-spacing: 0; text-transform: none; }
+
+  .lista { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+  .fila {
+    position: relative;
+    display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+    padding: var(--space-3);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    transition: border-color 200ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  @media (hover: hover) {
+    .fila:hover { border-color: var(--primary); box-shadow: var(--shadow); }
+    /* Al pasar por una acción de dentro, la fila apaga su propio resaltado:
+       si no, parece que se va a abrir el editor cuando en realidad se va a
+       otro sitio. Es el detalle que hace usable una tarjeta con acciones. */
+    .fila:hover:has(.accion:hover) { border-color: var(--border); box-shadow: none; }
+  }
+
+  /* `min-width: 0` es obligatorio: sin él un titular largo NO encoge y empuja
+     el estado y las acciones fuera de la fila. Es el fallo clásico de flexbox
+     y no se ve hasta que alguien escribe un titular de verdad. */
+  .titulo { flex: 1; min-width: 0; margin: 0; font-size: 1.0625rem; }
+  .titulo a { color: var(--text); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fila:hover .titulo a { color: var(--primary); }
+  .estirado::after { content: ''; position: absolute; inset: 0; }
+
+  .meta { display: flex; align-items: center; gap: var(--space-3); margin: 0; flex-shrink: 0; }
+  /* El estado se distingue por PALABRA además de por color. */
   .estado { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
   .estado.published { color: var(--ok-strong); font-weight: 700; }
   .destacada { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--primary); font-weight: 700; }
+  .autor { font-size: 0.8125rem; color: var(--muted); }
+
+  /* Por encima del enlace estirado, o quedaría debajo y no se podría pulsar. */
+  .accion { position: relative; z-index: 1; flex-shrink: 0; font-size: 0.875rem; color: var(--primary); }
+
+  .vacio {
+    display: grid; gap: var(--space-3); justify-items: start;
+    padding: var(--space-6); margin-block-start: var(--space-4);
+    background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius-lg);
+  }
+  .vacio p { margin: 0; color: var(--muted); max-width: 52ch; }
+  .vacio .grande { color: var(--text); font-family: var(--font-display); font-size: 1.25rem; }
 </style>

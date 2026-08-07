@@ -1,10 +1,12 @@
 ---
 import type { StoryView } from '../lib/content/types';
-import { formatDate } from '../lib/format';
+import { formatDate, formatTime } from '../lib/format';
 import { localePath, t } from '../lib/i18n';
 
-interface Props { locale: string; story: StoryView }
-const { locale, story } = Astro.props;
+interface Props { locale: string; story: StoryView; fecha?: 'completa' | 'hora' }
+// Dentro de una lista ya agrupada por día, repetir la fecha en cada tarjeta es
+// ruido: basta la hora. Fuera de esa lista (la portada) la fecha sí informa.
+const { locale, story, fecha = 'completa' } = Astro.props;
 const href = localePath(locale, `/noticia/${story.slug}`);
 ---
 
@@ -21,7 +23,9 @@ const href = localePath(locale, `/noticia/${story.slug}`);
   <h3><a class="stretched" href={href}>{story.title}</a></h3>
   <p class="standfirst">{story.standfirst}</p>
   <p class="byline">
-    <time datetime={story.publishedAt}>{formatDate(locale, story.publishedAt)}</time>
+    <time datetime={story.publishedAt}>
+      {fecha === 'hora' ? formatTime(locale, story.publishedAt) : formatDate(locale, story.publishedAt)}
+    </time>
     <span aria-hidden="true">·</span>
     <span>{t(locale, 'article.reading', { minutes: story.readingMinutes })}</span>
   </p>
