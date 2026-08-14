@@ -1,7 +1,7 @@
 {
   "schema": 2,
   "composer": "0.5.0",
-  "stack": "astro",
+  "stack": "astro-ssr",
   "features": {
     "analytics": {
       "version": "1.0.0",
