@@ -45,7 +45,7 @@
     "runtime": "1.0.0"
   },
   "quality": {
-    "version": "1.2.0"
+    "version": "1.4.0"
   },
   "runtime": {
     "port": 4321,
