@@ -45,10 +45,15 @@
     "runtime": "1.0.0"
   },
   "quality": {
-    "version": "1.4.0"
+    "version": "1.4.1"
   },
   "runtime": {
     "port": 4321,
     "health": "/healthz"
+  },
+  "project": {
+    "slug": "rafael-news",
+    "name": "Rafael News",
+    "description": "Rafael News"
   }
 }
