@@ -64,7 +64,7 @@ The newsletter and the newsroom are the parts that do need the database live:
 
 There is no migration command and no console in the runtime image. `migrate()`
 in `src/lib/content/db.ts` runs every entry of its `MIGRATIONS` list at boot —
-today `['001_content', '002_newsletter', '003_auth']` — so **deploying is
+today `['001_content', '002_newsletter', '003_auth', '004_story_video']` — so **deploying is
 applying the migration**. `002_newsletter.sql` creates the
 `newsletter_subscribers` table and its indexes, and needs `CREATE EXTENSION IF
 NOT EXISTS citext`: the database role must be allowed to create the extension,
@@ -76,6 +76,17 @@ columns, so it depends on `002_newsletter` having created the extension and on
 `001_content` having created `authors` (`users.author_id` references it).
 It creates **no user and no way to create the first one**: see
 [the first owner](#first-owner-bootstrap).
+
+`004_story_video.sql` (feature 66) adds `stories.video_id` — the 11-character
+YouTube id of a story, nullable — plus the `stories_video_id_shape` `CHECK` that
+keeps a URL out of the column. `migrate()` re-runs every entry on **every** boot
+and `schema_migrations` is bookkeeping, not a lock, so the file has to survive
+being applied twice: `ADD COLUMN IF NOT EXISTS` does that by itself, but
+**`ADD CONSTRAINT IF NOT EXISTS` does not exist in Postgres** and the `CHECK` is
+therefore wrapped in a `DO $$ … EXCEPTION WHEN duplicate_object THEN NULL; END $$;`
+block. Without it the second boot crashes the migration, `snapshot.init()`
+swallows the error and the portal quietly serves the seed. After a deploy the
+boot log must show `[db] migración 004_story_video aplicada`.
 
 Every migration is re-executed on every boot, which is why each one *must* be
 idempotent: they use `CREATE TABLE IF NOT EXISTS`, `CREATE EXTENSION IF NOT

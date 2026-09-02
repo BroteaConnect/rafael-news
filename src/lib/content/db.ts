@@ -11,6 +11,7 @@ import pg from 'pg';
 import migration001 from '../../migrations/001_content.sql?raw';
 import migration002 from '../../migrations/002_newsletter.sql?raw';
 import migration003 from '../../migrations/003_auth.sql?raw';
+import migration004 from '../../migrations/004_story_video.sql?raw';
 import seedData from './seed.data.json';
 import type { ContentSource, Localized, Story, TopicId } from './types';
 
@@ -18,6 +19,7 @@ const MIGRATIONS: ReadonlyArray<readonly [string, string]> = [
   ['001_content', migration001],
   ['002_newsletter', migration002],
   ['003_auth', migration003],
+  ['004_story_video', migration004],
 ];
 
 let pool: pg.Pool | null = null;
@@ -85,9 +87,10 @@ async function seedIfEmpty(): Promise<void> {
     }
     for (const s of source.stories) {
       await client.query(
-        `INSERT INTO stories (id, slug, topic_id, author_id, relevance, status, published_at, reading_minutes, lead)
-         VALUES ($1,$2,$3,$4,$5,'published',$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
-        [s.id, s.slug, s.topicId, s.authorId, s.relevance, s.publishedAt, s.readingMinutes, s.lead]);
+        `INSERT INTO stories (id, slug, topic_id, author_id, relevance, status, published_at, reading_minutes, lead, video_id)
+         VALUES ($1,$2,$3,$4,$5,'published',$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
+        [s.id, s.slug, s.topicId, s.authorId, s.relevance, s.publishedAt, s.readingMinutes, s.lead,
+          s.videoId ?? null]);
       for (const locale of Object.keys(s.title)) {
         // Sin cuerpo a propósito: inventar el análisis de un mercado y firmarlo
         // con el nombre de un analista real sería publicar algo falso. El cuerpo
@@ -124,7 +127,7 @@ export async function loadSnapshot(): Promise<{ source: ContentSource; version: 
     db.query('SELECT author_id, locale, role, bio FROM author_i18n'),
     db.query('SELECT id, slug FROM topics ORDER BY sort_order, id'),
     db.query('SELECT topic_id, locale, name FROM topic_i18n'),
-    db.query(`SELECT id, slug, topic_id, author_id, relevance, published_at, reading_minutes, lead
+    db.query(`SELECT id, slug, topic_id, author_id, relevance, published_at, reading_minutes, lead, video_id
               FROM stories WHERE status='published' AND published_at <= now()
               ORDER BY published_at DESC`),
     db.query('SELECT story_id, locale, title, standfirst, body_html FROM story_i18n'),
@@ -155,6 +158,7 @@ export async function loadSnapshot(): Promise<{ source: ContentSource; version: 
         publishedAt: new Date(s.published_at).toISOString(),
         readingMinutes: s.reading_minutes,
         lead: s.lead,
+        videoId: s.video_id ?? undefined,
         title: groupByLocale(i18n, (r) => r.title),
         standfirst: groupByLocale(i18n, (r) => r.standfirst),
         body: groupByLocale(i18n, (r) => r.body_html ?? ''),
