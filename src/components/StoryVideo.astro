@@ -1,0 +1,93 @@
+---
+// The story's video, as a FACADE: a poster panel that costs zero third-party
+// bytes, and an iframe that only exists after the reader presses play.
+//
+// That is not a performance trick, it is the privacy promise on /legal:
+// `legal.cookies.body` says the portal does not share your browsing with third
+// parties. Embedding YouTube on load — or even pulling a poster from
+// i.ytimg.com — would hand every reader's IP to Google before they asked for
+// anything. On click the player comes from youtube-nocookie.com, and
+// `article.video-notice` says so in plain words beforehand.
+import { VIDEO_ID } from '../lib/youtube';
+import { t } from '../lib/i18n';
+
+// The prop is named `locale` ON PURPOSE: content.test.mjs harvests the keys a
+// component needs with /\bt\(\s*locale\s*,\s*'…'/, so any other name makes them
+// invisible to the i18n gate and lets a half-translated page ship green.
+interface Props { locale: string; videoId: string; title: string }
+const { locale, videoId, title } = Astro.props;
+
+// Third check on the same value (parser → CHECK constraint → here). It costs
+// one regex, and what it guards is a string that goes straight into a `src`.
+const valid = VIDEO_ID.test(videoId);
+---
+
+{valid && (
+  <section class="video" aria-labelledby="video-title">
+    {/* Visually hidden, like StoryGrid's: the video is self-evident on screen,
+        but the heading keeps the h1 → h2 → h2 outline that gate-web enforces
+        and gives a screen reader something to jump to. */}
+    <h2 id="video-title" class="visually-hidden">{t(locale, 'article.video')}</h2>
+    <div class="frame" data-video={videoId} data-title={t(locale, 'article.video-title', { title })}>
+      <button type="button" class="play">{t(locale, 'article.video-play')}</button>
+    </div>
+    <p class="notice">{t(locale, 'article.video-notice')}</p>
+  </section>
+)}
+
+<script>
+  import { embedUrl } from '../lib/youtube';
+
+  for (const frame of document.querySelectorAll<HTMLElement>('[data-video]')) {
+    const button = frame.querySelector('button');
+    button?.addEventListener('click', () => {
+      const id = frame.dataset.video;
+      if (!id) return;
+      const iframe = document.createElement('iframe');
+      iframe.src = embedUrl(id);
+      iframe.title = frame.dataset.title ?? '';
+      iframe.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+      iframe.allowFullscreen = true;
+      iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+      iframe.loading = 'lazy';
+      // The button node is REPLACED, not hidden: `[hidden]` loses to any author
+      // `display` rule, so a hidden button would still be sitting on the video.
+      frame.replaceChildren(iframe);
+      // replaceChildren destroys the element that had focus; without this a
+      // keyboard reader is dropped back to <body> and loses their place.
+      iframe.focus();
+    });
+  }
+</script>
+
+<style>
+  .video { margin-block: var(--space-5); }
+  /* The reserved 16:9 box is what stops the swap from moving the page: the
+     iframe lands in exactly the space the poster already took. */
+  .frame {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    display: grid;
+    place-items: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .play {
+    min-height: 44px;
+    padding: var(--space-2) var(--space-4);
+    font: inherit;
+    font-weight: 600;
+    color: var(--primary-contrast);
+    background: var(--primary);
+    border: 0;
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  /* The iframe is built with createElement, so it never carries the scope
+     attribute Astro adds to template elements: without :global() this rule
+     matches nothing and the player renders unstyled at 300×150. */
+  .frame :global(iframe) { width: 100%; height: 100%; border: 0; display: block; }
+  .notice { margin-block: var(--space-2) 0; color: var(--muted); font-size: 0.875rem; }
+</style>

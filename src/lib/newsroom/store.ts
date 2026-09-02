@@ -24,6 +24,9 @@ export interface StoryRow {
 export interface StoryDraft {
   id: string; slug: string; topicId: TopicId; authorId: string;
   relevance: Relevance; status: Status; publishedAt: string | null; lead: boolean;
+  /** The 11-character YouTube id, or null. Language-neutral: it lives on
+   *  `stories`, so every language tab shows and writes the same value. */
+  videoId: string | null;
   i18n: Record<string, { title: string; standfirst: string; bodyMd: string }>;
 }
 
@@ -50,7 +53,7 @@ export async function listStories(locale: string): Promise<StoryRow[]> {
 
 export async function getDraft(id: string): Promise<StoryDraft | null> {
   const { rows } = await db().query(
-    `SELECT id, slug, topic_id, author_id, relevance, status, published_at, lead
+    `SELECT id, slug, topic_id, author_id, relevance, status, published_at, lead, video_id
      FROM stories WHERE id = $1`, [id],
   );
   const s = rows[0];
@@ -61,6 +64,7 @@ export async function getDraft(id: string): Promise<StoryDraft | null> {
   return {
     id: s.id, slug: s.slug, topicId: s.topic_id, authorId: s.author_id,
     relevance: s.relevance, status: s.status, lead: s.lead,
+    videoId: s.video_id ?? null,
     publishedAt: s.published_at ? new Date(s.published_at).toISOString() : null,
     i18n: Object.fromEntries(i18n.map((r) => [r.locale, {
       title: r.title, standfirst: r.standfirst, bodyMd: r.body_md,
@@ -82,6 +86,10 @@ export async function createStory(authorId: string, topicId: TopicId): Promise<s
 export interface SaveInput {
   id: string; locale: string; title: string; standfirst: string; bodyMd: string;
   topicId: TopicId; relevance: Relevance;
+  /** Written as handed over, `null` clearing the video. No COALESCE cleverness
+   *  here: "empty the field to remove it" has to be one obvious code path, and
+   *  deciding what to do with an unparseable link is the page's job. */
+  videoId: string | null;
 }
 
 /** Guarda un idioma de la noticia. El markdown se convierte AQUÍ y se guarda ya
@@ -92,9 +100,10 @@ export async function saveStory(input: SaveInput): Promise<void> {
   try {
     await client.query('BEGIN');
     await client.query(
-      `UPDATE stories SET topic_id = $2, relevance = $3, reading_minutes = $4, updated_at = now()
+      `UPDATE stories SET topic_id = $2, relevance = $3, reading_minutes = $4, video_id = $5,
+              updated_at = now()
        WHERE id = $1`,
-      [input.id, input.topicId, input.relevance, readingMinutes(input.bodyMd)],
+      [input.id, input.topicId, input.relevance, readingMinutes(input.bodyMd), input.videoId],
     );
     await client.query(
       `INSERT INTO story_i18n (story_id, locale, title, standfirst, body_md, body_html)

@@ -130,7 +130,7 @@ not in a `jsonb` column, so editing one language never overwrites another.
 | `author_i18n` | `author_id`, `locale` (PK together), `role`, `bio` |
 | `topics` | `id` PK, `slug` UNIQUE, `sort_order` |
 | `topic_i18n` | `topic_id`, `locale` (PK together), `name` |
-| `stories` | `id` PK, `slug` UNIQUE, `topic_id`, `author_id`, `relevance` (`high\|medium\|low`), `status` (`draft\|scheduled\|published\|archived`, default `draft`), `published_at`, `reading_minutes`, `lead`, `created_at`, `updated_at` |
+| `stories` | `id` PK, `slug` UNIQUE, `topic_id`, `author_id`, `relevance` (`high\|medium\|low`), `status` (`draft\|scheduled\|published\|archived`, default `draft`), `published_at`, `reading_minutes`, `lead`, `video_id` (nullable, `CHECK` `^[A-Za-z0-9_-]{11}$`), `created_at`, `updated_at` |
 | `story_i18n` | `story_id`, `locale` (PK together), `title`, `standfirst`, `body_md`, `body_html` |
 | `content_version` | single row (`id boolean PK CHECK (id)`), `version bigint` |
 | `schema_migrations` | `version` PK, `applied_at` |
@@ -145,6 +145,13 @@ not in a `jsonb` column, so editing one language never overwrites another.
   is stored already escaped and rendered, so no template is responsible for
   sanitising ([Newsroom write path](#newsroom-write-path)). A story without
   `body_html` renders the `article.body-pending` copy instead of an invented text.
+- `video_id` holds the **11-character YouTube id, never the pasted URL** — the
+  value ends up inside an iframe `src`, so the parser
+  ([`src/lib/youtube.ts`](#srclibyoutubets)), the `CHECK` constraint and the
+  component each test the same shape. It sits on `stories`, not on `story_i18n`:
+  an id is not translated text, so it behaves like `topic_id` and `relevance`
+  and every language tab of the editor writes the same value back. `NULL` means
+  the story has no video.
 
 ### Snapshot and invalidation
 
@@ -209,12 +216,13 @@ every public page and fails if the response lacks `s-maxage` or `ETag`, if
   `bio`), `Topic` (`id: TopicId`, `slug`, `name`), `Story` (`id`, `slug`,
   `topicId`, `authorId`, `relevance`, `publishedAt` ISO-8601 UTC,
   `readingMinutes`, `title`, `standfirst`, `lead`, optional `body` — the
-  sanitised HTML per locale), `Quote` (`id`, `name`, `value`, `decimals`,
+  sanitised HTML per locale, optional `videoId` — the 11-char YouTube id), `Quote` (`id`, `name`, `value`, `decimals`,
   `changePct`), `MarketSnapshot` (`quotes`, `asOf`, `delayMinutes`, `sample`)
   and `ContentSource` grouping all of them.
 - Views, one entity already resolved for one language: `AuthorView`,
   `TopicView` (adds `count`), `StoryView` (adds `topicName`, `topicSlug`,
-  `body` — sanitised HTML or `''` — and a nested `AuthorView`). **Views carry
+  `body` — sanitised HTML or `''` — `videoId: string | null` and a nested
+  `AuthorView`). **Views carry
   plain strings, never `Localized`** — no component has to know how a language
   is picked.
 
@@ -523,10 +531,12 @@ only carries what is published.
 
 ```
 src/lib/markdown.ts                     Markdown → HTML, readingMinutes, slugify
+src/lib/youtube.ts                      YouTube link → the 11-char id, and the URLs back
 src/lib/newsroom/store.ts               the write accessors (own pool, max: 3)
 src/pages/admin/noticias/index.astro    the story list, grouped by day
 src/pages/admin/noticias/[id].astro     the editor: write, preview, publish, unpublish
 src/locales/markdown.test.mjs           the renderer's tests
+src/locales/youtube.test.mjs            the link parser's tests
 ```
 
 ```mermaid
@@ -564,9 +574,9 @@ not painted is cosmetics, and the id is in the URL:
 | Function | Returns / failure modes |
 | --- | --- |
 | `listStories(locale)` | `StoryRow[]` — **every** story, any status, ordered by `COALESCE(published_at, updated_at) DESC`. `LEFT JOIN`s with fallbacks (`(sin título)`, empty author name) so a barely-started draft still lists instead of disappearing |
-| `getDraft(id)` | `StoryDraft \| null` — the row plus one `i18n` entry per existing locale row, carrying `bodyMd` (the Markdown source, never the HTML) |
+| `getDraft(id)` | `StoryDraft \| null` — the row plus one `i18n` entry per existing locale row, carrying `bodyMd` (the Markdown source, never the HTML) and `videoId` (`string \| null`, language-neutral) |
 | `createStory(authorId, topicId)` | the new id, `st-<base36 time>-<base36 random>`, inserted as `draft` with `slug = id` and `reading_minutes = 1`. A timestamped id sorts by itself and does not depend on a headline, which changes a lot before publication |
-| `saveStory(input)` | `void`. One transaction: `stories` (topic, relevance, `reading_minutes`, `updated_at`) plus an upsert of one `story_i18n` row (title, standfirst, `body_md`, `body_html`). It renders the Markdown itself; it never publishes and never touches the slug. `reading_minutes` is recomputed from the body just saved |
+| `saveStory(input)` | `void`. One transaction: `stories` (topic, relevance, `reading_minutes`, `video_id`, `updated_at`) plus an upsert of one `story_i18n` row (title, standfirst, `body_md`, `body_html`). It renders the Markdown itself; it never publishes and never touches the slug. `reading_minutes` is recomputed from the body just saved. `videoId` is written exactly as handed over — `null` clears the video — so the "empty the field to remove it" path has no `COALESCE` cleverness in it; deciding what to do with an unparseable link is the page's job |
 | `publish(id, defaultLocale, lead)` | `'ok' \| 'sin-titulo' \| 'slug-repetido'` — the two failures write nothing |
 | `unpublish(id)` | `void`: `status='draft'`, `lead=false`. **Deletes nothing** — pulling a story and losing it are different things |
 
@@ -623,7 +633,8 @@ the story count (`topics.count`).
 
 **The editor (`[id].astro`)** is two columns above 940px: writing on the left
 (title, standfirst, body, preview) and a sticky decision rail on the right
-(topic, relevance, save; status, publish/unpublish, lead checkbox). Below 940px
+(topic, relevance, YouTube video, save; status, publish/unpublish, lead
+checkbox). Below 940px
 it collapses to one column with the rail **after** the text, which is the order
 in which the work happens.
 
@@ -679,6 +690,43 @@ snapshot: a topic name is editorial content, not UI copy, so it is never a `t()`
 key. The newsroom's own chrome (`admin.noticias.*`) is UI copy and lives in both
 locale files; its status family is declared in the `DYNAMIC` map of
 `content.test.mjs` because the editor builds those keys from a template.
+
+### `src/lib/youtube.ts`
+
+A story can carry one YouTube video, configured by the desk in the editor rail
+and rendered on `/noticia/<slug>` only (see
+[`StoryVideo.astro`](#components)). Everything the feature stores is what this
+module returns.
+
+`parseYouTubeId(input)` takes whatever was pasted and returns the **11-character
+id or `null`**. It accepts a bare id, `youtu.be/<id>`, `/watch?v=<id>`,
+`/embed/<id>`, `/shorts/<id>`, `/live/<id>` and `/v/<id>`, from `youtube.com`,
+`youtu.be` or `youtube-nocookie.com`, optionally under `www.`, `m.` or
+`music.`. Extra parameters (`&t=`, `&list=`, `?si=`) are read and dropped: no
+start offset is stored.
+
+Two properties are the whole point, and both have tests:
+
+- **The host is matched by equality**, never with `includes('youtube.com')` —
+  `https://youtube.com.evil.tld/watch?v=…` contains that string and is not
+  YouTube. Only `http:` and `https:` are accepted.
+- **It never throws.** A raw string is not a URL and `new URL()` would throw on
+  it, which in an editor form has to read as "that is not a video", not as a 500.
+
+`embedUrl(id)` builds the player URL on **`youtube-nocookie.com`**, the
+privacy-enhanced domain: no cookie is written until playback starts, which is
+what makes the poster facade a promise rather than decoration.
+`watchUrl(id)` is the plain `youtube.com` link the rail offers so the desk can
+confirm they pasted the right video.
+
+The module has **no imports at all**, and must not gain any: `youtube.test.mjs`
+loads it through `load-ts.mjs`, which only handles self-contained modules (see
+[Testing](#testing)).
+
+The video is a **story field, not Markdown**. `renderMarkdown` still emits no
+images and no raw HTML, and nothing about its allowed subset changed: pasting a
+YouTube link into the body still produces an `<a>`, and the player only ever
+comes from `video_id`.
 
 ## Newsletter (double opt-in)
 
@@ -897,6 +945,7 @@ component counts as a dead file against the fleet budget).
 | `NewsletterStrip.astro` | inverted band with the `POST /api/newsletter` form, its `role="status"` line and the consent note; posts JSON with `fetch` and prints the server's translated `message` | `locale` |
 | `AuthorBlock.astro` | home author panel: initials avatar, role, bio, story count | `locale`, `author: AuthorView`, `stories: number` |
 | `TopicList.astro` | topic tiles with icon, name and count | `locale`, `topics: TopicView[]` |
+| `StoryVideo.astro` | the story's YouTube video as a **facade**: a 16:9 poster panel with a play button and the `article.video-notice` warning; on click a script replaces the button with the `youtube-nocookie.com` iframe, so no third-party byte is fetched until the reader asks. Renders nothing if the id fails `VIDEO_ID` | `locale`, `videoId: string`, `title: string` |
 | `SiteFooter.astro` | legal links, language switcher, disclaimer, copyright, "powered by brotea" | `locale` |
 | `LanguageSwitcher.astro` | locale links (**generated file**, do not edit) | `locale` |
 
@@ -1035,6 +1084,14 @@ an older label names the day it heads — the classic failure of formatting
 midnight UTC. It also asserts `ZONA === 'Europe/Madrid'` and that passing another
 zone yields another day, i.e. that the zone is a parameter and not a hardcoded
 assumption.
+
+`youtube.test.mjs` guards the other author-controlled string that reaches an
+attribute, so it is mostly rejections too: a host that merely *contains*
+`youtube.com`, other sites, `javascript:` and `data:`, ids of the wrong length or
+alphabet, and inputs that are not URLs at all (including `null` and `''`, which
+must return `null` rather than throw). Every accepted input is also asserted to
+match `VIDEO_ID` — that property is what makes the value safe to interpolate
+into an iframe `src`.
 
 `markdown.test.mjs` guards the only door through which HTML enters the portal, so
 half of it is injection attempts rather than pretty examples: `<script>` and

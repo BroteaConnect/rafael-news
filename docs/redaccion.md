@@ -53,7 +53,7 @@ el botón de empezar.
 «Nueva noticia» crea el borrador y lleva directamente al editor,
 `/admin/noticias/<id>`. El editor son **dos columnas**: a la izquierda se
 escribe (titular, entradilla, cuerpo y la vista previa) y a la derecha se decide
-—tema, relevancia, guardar, el estado, publicar o retirar y el destacado— en una
+—tema, relevancia, vídeo, guardar, el estado, publicar o retirar y el destacado— en una
 columna que también se queda pegada al bajar, para no tener que recorrer el
 cuerpo entero y la vista previa hasta el botón que más se usa. En pantalla
 estrecha queda todo en una columna y las decisiones van detrás del texto, que es
@@ -68,6 +68,26 @@ el orden en el que se trabaja. Ahí se hace todo:
   no pisa la española.
 - **Ver cómo queda**: la vista previa usa el MISMO renderizado que se guarda, no
   una aproximación.
+- **Poner un vídeo de YouTube**: en la columna de la derecha, debajo de la
+  relevancia. Se puede pegar el enlace tal cual como venga —
+  `youtube.com/watch?v=…`, `youtu.be/…`, un `/shorts/`, un `/live/`, el enlace
+  de «insertar»— o el identificador suelto de 11 caracteres. De todo eso se
+  guarda **solo el identificador**, así que da igual que el enlace traiga cola
+  (`&t=`, `&list=`, `?si=`); el minuto de inicio no se guarda. Cuando ya hay uno
+  puesto, al lado aparece un «verlo en YouTube» para comprobar de un vistazo que
+  es el vídeo que se quería. **Para quitarlo, se vacía el campo y se guarda.**
+  El vídeo es de la noticia, no de un idioma: es el mismo en español y en
+  inglés, y se ve y se escribe igual desde cualquiera de las dos pestañas.
+  Si lo que se pega no es de YouTube, la noticia **se guarda igual** —el texto
+  no se pierde nunca por un enlace mal copiado—, se mantiene el vídeo que
+  hubiera antes y el aviso lo dice; el campo conserva lo escrito para poder
+  corregirlo.
+  En la web el vídeo sale en la página de la noticia, entre la cabecera y el
+  texto, y de entrada solo se ve un recuadro con el botón de reproducir: hasta
+  que el lector no lo pulsa **no se pide nada a YouTube**, que es lo que
+  permite seguir diciendo en `/legal` que no compartimos su navegación con
+  terceros. Debajo del recuadro se avisa de que al darle a reproducir el vídeo
+  se carga desde YouTube.
 - **Publicar**: solo un editor o el responsable. La dirección de la noticia se
   calcula del titular en español **al publicar**, y republicar no la mueve: una
   URL que cambia después de compartida es un enlace roto. Sin titular no se
