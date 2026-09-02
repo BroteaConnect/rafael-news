@@ -59,6 +59,9 @@ The newsletter and the newsroom are the parts that do need the database live:
 - if the database is set but momentarily unreachable, an existing session cannot
   be resolved: the middleware logs `[auth] no se pudo leer la sesión` and treats
   the request as signed out (a `302` to `/admin/entrar`), never a `500`.
+- without it, `POST /api/mcp` answers `503` (`-32002`) to any request that
+  carries a key, because there is nothing to verify the key against — a request
+  with no bearer still gets its `401`. See [mcp.md](./mcp.md#degraded-modes).
 
 ## Migrations
 

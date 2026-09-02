@@ -580,6 +580,7 @@ not painted is cosmetics, and the id is in the URL:
 | `getDraft(id)` | `StoryDraft \| null` — the row plus one `i18n` entry per existing locale row, carrying `bodyMd` (the Markdown source, never the HTML) |
 | `createStory(authorId, topicId)` | the new id, `st-<base36 time>-<base36 random>`, inserted as `draft` with `slug = id` and `reading_minutes = 1`. A timestamped id sorts by itself and does not depend on a headline, which changes a lot before publication |
 | `saveStory(input)` | `void`. One transaction: `stories` (topic, relevance, `reading_minutes`, `updated_at`) plus an upsert of one `story_i18n` row (title, standfirst, `body_md`, `body_html`). It renders the Markdown itself; it never publishes and never touches the slug. `reading_minutes` is recomputed from the body just saved |
+| `discardEmptyStory(id)` | `void`. Undoes a `createStory()` whose `saveStory()` never landed, and nothing else: it deletes only a `draft` with no `story_i18n` row in any language, a row no reader and no editor ever wanted. Used by the MCP `create_draft` (see [mcp.md](./mcp.md)), so a failed write does not leave a `(sin título)` per retry. Deliberately narrow so it can never widen into a delete-story tool |
 | `publish(id, defaultLocale, lead)` | `'ok' \| 'sin-titulo' \| 'slug-repetido'` — the two failures write nothing |
 | `unpublish(id)` | `void`: `status='draft'`, `lead=false`. **Deletes nothing** — pulling a story and losing it are different things |
 
