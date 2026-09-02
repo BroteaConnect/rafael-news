@@ -72,6 +72,9 @@ test('los permisos son los de la tabla, y un rol no hereda de más arriba', () =
   assert.equal(can('journalist', 'profile:own'), true);
   assert.equal(can('journalist', 'story:publish'), false);
   assert.equal(can('journalist', 'user:invite'), false);
+  // An MCP key can never exceed what its owner may do, so every role carries
+  // the permission: what the key will actually do is bounded by its scopes.
+  assert.equal(can('journalist', 'mcp:token'), true);
   assert.equal(can('editor', 'story:publish'), true);
   assert.equal(can('editor', 'user:invite'), false, 'publicar no da derecho a invitar');
   assert.equal(can('owner', 'user:invite'), true);

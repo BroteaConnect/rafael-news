@@ -64,8 +64,8 @@ The newsletter and the newsroom are the parts that do need the database live:
 
 There is no migration command and no console in the runtime image. `migrate()`
 in `src/lib/content/db.ts` runs every entry of its `MIGRATIONS` list at boot —
-today `['001_content', '002_newsletter', '003_auth']` — so **deploying is
-applying the migration**. `002_newsletter.sql` creates the
+today `['001_content', '002_newsletter', '003_auth', '005_mcp_tokens']` — so
+**deploying is applying the migration**. `002_newsletter.sql` creates the
 `newsletter_subscribers` table and its indexes, and needs `CREATE EXTENSION IF
 NOT EXISTS citext`: the database role must be allowed to create the extension,
 or the boot log shows the migration failing.
@@ -76,6 +76,14 @@ columns, so it depends on `002_newsletter` having created the extension and on
 `001_content` having created `authors` (`users.author_id` references it).
 It creates **no user and no way to create the first one**: see
 [the first owner](#first-owner-bootstrap).
+
+`005_mcp_tokens.sql` (feature 67) adds `mcp_tokens`, the keys a Claude client
+authenticates with against `POST /api/mcp` (see [mcp.md](./mcp.md)). It depends
+on `003_auth` having created `users`, which it references with
+`ON DELETE CASCADE`. It is numbered `005` because `004` belongs to the
+story-video feature; the number is bookkeeping for humans, the version string is
+what `schema_migrations` stores. There is **no new environment variable**: like
+sessions, the keys derive everything from the database and `node:crypto`.
 
 Every migration is re-executed on every boot, which is why each one *must* be
 idempotent: they use `CREATE TABLE IF NOT EXISTS`, `CREATE EXTENSION IF NOT
@@ -136,9 +144,10 @@ sin configurar: no se envía "<subject>"` and returns `false`.
 
 Same for a send that fails: logged, never thrown.
 
-There are **no new environment variables** for the newsroom. Sessions,
-invitations and password hashing derive everything from the database and
-`node:crypto` — there is no signing secret to set or rotate. The one behaviour
+There are **no new environment variables** for the newsroom, nor for the MCP
+server. Sessions, invitations, password hashing and MCP keys derive everything
+from the database and `node:crypto` — there is no signing secret to set or
+rotate. The one behaviour
 tied to the build is the `Secure` flag on the session and CSRF cookies, which
 comes from `import.meta.env.PROD`: the Docker image is a production build, so
 the flag is on in every deployed environment and off in `npm run dev`.

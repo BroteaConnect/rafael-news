@@ -39,6 +39,7 @@ Locale-agnostic endpoints (no language prefix):
 | --- | --- | --- |
 | `GET /healthz` | `src/pages/healthz.ts` | `200 {"ok":true,"commit":"<sha or null>"}`, `Cache-Control: no-store` |
 | `POST /api/newsletter` | `src/pages/api/newsletter.ts` | subscription request, double opt-in: `202` accepted, `400` invalid email, `429` rate limited, `500`/`503` (see [Newsletter](#newsletter-double-opt-in)) |
+| `POST /api/mcp` | `src/pages/api/mcp.ts` | the MCP server: JSON-RPC 2.0 over HTTP, `Authorization: Bearer` on every call, eight tools, no CORS header and no `Origin` check (see [mcp.md](./mcp.md)) |
 | `GET /rss.xml` | `src/pages/rss.xml.ts` | RSS 2.0 feed of every story, default locale only (`<language>es-ES</language>`) |
 | `GET /sitemap.xml` | `src/pages/sitemap.xml.ts` | every URL in every locale, each with `xhtml:link` hreflang alternates |
 
@@ -58,6 +59,8 @@ and every `/admin` response ships `Cache-Control: no-store` and
 | `POST /admin/noticias` | creates a draft and `303`-redirects to `/admin/noticias/<id>` |
 | `GET /admin/noticias/<id>` | the editor; `?idioma=<code>` selects which language row is being edited (default locale if absent or unknown) |
 | `POST /admin/noticias/<id>` | `accion=guardar\|publicar\|despublicar` (see [Newsroom write path](#newsroom-write-path)) |
+| `GET /admin/mcp` | the MCP keys of whoever is signed in: name, scopes, expiry, last use |
+| `POST /admin/mcp` | `action=create\|revoke`; `create` shows the clear token exactly once (see [mcp.md](./mcp.md)) |
 
 Language resolution in every page is `resolveLocale(Astro.params.lang)` from
 `src/lib/route.ts`: no prefix → default locale, a published locale → that
@@ -229,6 +232,7 @@ every public page and fails if the response lacks `s-maxage` or `ETag`, if
 | `getTopics(locale)` | `TopicView[]` with published counts |
 | `getTopic(slug, locale)` | `TopicView \| null` — looked up by **slug**, not id |
 | `getAuthor(locale)` | `AuthorView` — the portal's single by-line |
+| `getAuthors(locale)` | `AuthorView[]` — every by-line; the read gate `list_authors` goes through |
 | `getAuthorBySlug(slug, locale)` | `AuthorView \| null` |
 | `getStoriesByAuthor(authorId, locale)` | `StoryView[]` |
 | `getSearchIndex(locale)` | `{ slug, title, standfirst, topic }[]` |
@@ -445,6 +449,13 @@ A table, not a ladder of `if`s, so it can be read at a glance and tested whole
 | `story:publish` | — | ✅ | ✅ |
 | `user:invite` | — | — | ✅ |
 | `user:role` | — | — | ✅ |
+| `mcp:token` | ✅ | ✅ | ✅ |
+
+`mcp:token` is on all three rows because minting a key for one's own Claude
+client is not a privileged act, and what the key may do is bounded twice over —
+by its scopes and by the role of whoever holds it. It is still a permission of
+its own so that "who may point a credential at the public internet" has an
+answer that can be narrowed tomorrow without touching a page.
 
 `story:*` are declared but nothing consumes them yet — story editing is a later
 feature. `user:role` likewise has no page today. Checks are always server-side
@@ -471,7 +482,8 @@ is nullable on purpose, because a failed sign-in has no user and is exactly the
 kind of thing worth recording.
 
 Actions written today: `login.ok`, `login.failed`, `logout`, `user.invited`,
-`user.accepted_invite`, `profile.updated`, `password.reset`.
+`user.accepted_invite`, `profile.updated`, `password.reset`, `mcp.token.issued`,
+`mcp.token.revoked`, `mcp.draft.created`, `mcp.draft.updated`.
 
 ### Data model
 
@@ -486,6 +498,7 @@ by `002_newsletter`.
 | `sessions` | `id` PK, `user_id` → `users(id)` `ON DELETE CASCADE`, `token_hash` UNIQUE, `created_at`, `last_seen_at`, `expires_at`, `revoked_at`, `ip`, `user_agent`; partial index on `user_id WHERE revoked_at IS NULL` |
 | `password_resets` | `id` PK, `user_id` → `users(id)` `ON DELETE CASCADE`, `token_hash` UNIQUE, `expires_at`, `used_at`, `created_at` |
 | `audit_log` | `id` PK, `actor_id` → `users(id)` `ON DELETE SET NULL` (nullable), `action`, `entity`, `entity_id`, `payload jsonb`, `ip`, `at`; index on `at DESC` |
+| `mcp_tokens` | `id` PK, `user_id` → `users(id)` `ON DELETE CASCADE`, `name`, `token_hash` UNIQUE (sha256 hex), `scopes text[]` (`content:read` \| `stories:write`, `<@`-constrained, default read-only), `created_at`, `expires_at` (NULL = never), `last_used_at`, `revoked_at`; partial index on `user_id WHERE revoked_at IS NULL`. Added by `005_mcp_tokens.sql` — see [mcp.md](./mcp.md) |
 
 `users.author_id` is the join between the private account and the public
 by-line, and it is deliberately loose in both directions: **a user without an
@@ -680,6 +693,37 @@ key. The newsroom's own chrome (`admin.noticias.*`) is UI copy and lives in both
 locale files; its status family is declared in the `DYNAMIC` map of
 `content.test.mjs` because the editor builds those keys from a template.
 
+## MCP server
+
+`POST /api/mcp` lets Claude, running in somebody else's client, read the portal
+and write drafts in it. It is the same node process, the same tables and the
+same permission model — full detail, including the eight tools and the client
+configuration, is in [mcp.md](./mcp.md).
+
+```
+src/lib/mcp/protocol.ts            envelope, versions, scopes, tool catalogue, validation
+src/lib/mcp/tools.ts               what the tools do (reads through the snapshot)
+src/pages/api/mcp.ts               the endpoint: auth, rate limits, dispatch
+src/pages/admin/mcp.astro          minting and revoking keys
+src/migrations/005_mcp_tokens.sql  the mcp_tokens table
+src/locales/mcp.test.mjs           the tests for protocol.ts
+```
+
+Four properties worth knowing without opening that document:
+
+- **Writing stops at `draft`.** There is no publish tool, `stories:write` is a
+  separate scope that is off by default, and `update_draft` refuses a published
+  story. The snapshot only loads published rows, so a draft written over MCP is
+  invisible to readers by construction.
+- **Read tools never query Postgres**: they go through
+  `src/lib/content/store.ts`, like every page.
+- **`protocol.ts` has zero relative imports** so `node --test` can load it
+  through `src/lib/load-ts.mjs`; that is why `buildTools()` receives the locale
+  list instead of importing `config.json`, exactly as `dayLabel()` receives its
+  Intl tag.
+- **No CORS header, no `Origin` comparison, ever** — re-adding one re-adds the
+  `403` that forced `checkOrigin: false`.
+
 ## Newsletter (double opt-in)
 
 Subscriptions live in this app's own Postgres. Until feature 59 the form
@@ -860,6 +904,18 @@ Two different things, and they live in two different places.
   headline is a row, not interface copy: it lives in `story_i18n` /
   `topic_i18n` / `author_i18n`, never in a locale file.
 
+- **Protocol strings** — a third category, created by the MCP server: tool
+  names, tool descriptions, the `instructions` of `initialize`, JSON-RPC error
+  messages and the plain-English text of an `isError` result. They are
+  **English only and are not a merge blocker**, because they are read by a model
+  and by a developer and their field names are fixed English in the MCP schema.
+  The precedent is already in the repo: `GET /api/newsletter` answers with the
+  hardcoded `'POST {email, locale}'` while every reader-facing message in the
+  same file goes through `t(locale, 'newsletter.*')`. Bilingualism lives instead
+  in the `locale` argument every tool takes, which returns real `story_i18n`
+  rows in the requested language. `/admin/mcp`, being a page a person reads, is
+  ordinary UI chrome and is fully bilingual (`admin.mcp.*`).
+
 `src/locales/content.test.mjs` enforces both halves against the seed
 (`seed.data.json`), which is what a fresh database is loaded with:
 
@@ -1035,6 +1091,16 @@ an older label names the day it heads — the classic failure of formatting
 midnight UTC. It also asserts `ZONA === 'Europe/Madrid'` and that passing another
 zone yields another day, i.e. that the zone is a parameter and not a hardcoded
 assumption.
+
+`mcp.test.mjs` covers `src/lib/mcp/protocol.ts`, and its first assertion is the
+one that matters: exactly `create_draft` and `update_draft` carry
+`stories:write`, every other tool is `content:read`, and no tool is named
+`publish_*`. It also pins the id-of-`0` notification trap, bearer parsing,
+version negotiation, that each schema's `locale` enum comes from the argument
+(so adding a language is a `config.json` edit) and the hand-rolled argument
+validator. What needs a database — the merge in `update_draft`, the scope
+`CHECK`, revocation, suspension — is verified by hand against a scratch
+Postgres, as [mcp.md](./mcp.md) records.
 
 `markdown.test.mjs` guards the only door through which HTML enters the portal, so
 half of it is injection attempts rather than pretty examples: `<script>` and

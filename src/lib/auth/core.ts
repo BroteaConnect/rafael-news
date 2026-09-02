@@ -91,10 +91,16 @@ export const isRole = (v: unknown): v is Role => ROLES.includes(v as Role);
 
 /** Qué puede hacer cada rol. Es una tabla y no una escalera de `if` para que se
  *  pueda leer de un vistazo y probar entera. */
+// `mcp:token` is on the three rows, like `profile:own` and `story:own`: minting
+// a key for one's own Claude client is not a privileged act, and what the key
+// may do is bounded twice over — by its scopes and by the role of whoever holds
+// it. It is a row of its own so that "who may point a credential at the public
+// internet" is a question with an answer, and one that can be revoked per role
+// tomorrow without touching a page.
 const CAN = {
-  journalist: ['profile:own', 'story:own'],
-  editor: ['profile:own', 'story:own', 'story:any', 'story:publish'],
-  owner: ['profile:own', 'story:own', 'story:any', 'story:publish', 'user:invite', 'user:role'],
+  journalist: ['profile:own', 'story:own', 'mcp:token'],
+  editor: ['profile:own', 'story:own', 'story:any', 'story:publish', 'mcp:token'],
+  owner: ['profile:own', 'story:own', 'story:any', 'story:publish', 'user:invite', 'user:role', 'mcp:token'],
 } as const satisfies Record<Role, readonly string[]>;
 
 export type Permission = (typeof CAN)[Role][number];

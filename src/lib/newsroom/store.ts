@@ -79,6 +79,19 @@ export async function createStory(authorId: string, topicId: TopicId): Promise<s
   return id;
 }
 
+/**
+ * Undo a createStory() whose saveStory() never landed. Deliberately narrow: it
+ * deletes only a draft that carries no text in any language, which is a row no
+ * reader and no editor ever wanted. Anything else is somebody's work and is left
+ * exactly where it is, so this can never widen into a delete-story tool.
+ */
+export async function discardEmptyStory(id: string): Promise<void> {
+  await db().query(
+    `DELETE FROM stories WHERE id = $1 AND status = 'draft'
+       AND NOT EXISTS (SELECT 1 FROM story_i18n WHERE story_id = $1)`, [id],
+  );
+}
+
 export interface SaveInput {
   id: string; locale: string; title: string; standfirst: string; bodyMd: string;
   topicId: TopicId; relevance: Relevance;
