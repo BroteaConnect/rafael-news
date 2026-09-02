@@ -86,6 +86,44 @@ Guardar lo hace quien haya pasado la comprobación de la noticia; publicar y
 retirar exigen permiso, y sin él la acción no se ejecuta en silencio: la página
 dice que no se puede.
 
+## Conectar Claude a la redacción
+
+Desde **Panel → Conectar con Claude** (`/admin/mcp`) se crea una *llave*: una
+contraseña larga que se pega en la configuración de Claude —en tu ordenador, en
+tu móvil, donde sea— y que le deja leer este portal y escribir borradores **con
+tu firma**.
+
+Lo que más importa, y no cambia: **ninguna llave puede publicar ni retirar una
+noticia.** Todo lo que escriba Claude entra como borrador, no se ve en la web y
+sigue el mismo camino que cualquier texto tuyo: alguien lo lee y un editor lo
+publica desde `/admin/noticias`. Tampoco puede tocar una noticia ya publicada.
+
+Cómo se crea:
+
+1. **Ponle un nombre** que diga dónde va a vivir («claude del portátil»). El día
+   que haya cuatro, el nombre es lo único que te dirá cuál revocar.
+2. **Elige caducidad.** Por defecto 90 días. Lo que de verdad protege es
+   revocarla, no el reloj.
+3. **Decide si podrá escribir.** Leer lo publicado va siempre; crear y editar
+   borradores es una casilla aparte que viene desmarcada. Si solo quieres que
+   Claude te resuma la portada, déjala como está.
+4. **Copia la llave en ese momento.** Se enseña una vez y no vuelve a mostrarse:
+   la base de datos solo guarda su huella, igual que con las contraseñas. Si la
+   pierdes, se revoca y se crea otra.
+
+Junto a la llave aparece la dirección del servidor
+(`https://rafael-news.brotea.dev/api/mcp`), que es el otro dato que pide el
+cliente. Los detalles técnicos y los ejemplos de configuración están en
+[mcp.md](./mcp.md), en inglés.
+
+**Revocar es un botón.** Deja de funcionar en la petición siguiente, sin esperas
+y sin reiniciar nada: si una llave se te ha ido en una captura de pantalla o en
+un ordenador que ya no usas, revócala y crea otra. Para cambiarla sin cortes:
+crea la nueva, cámbiala en el cliente y revoca la vieja.
+
+La lista dice cuándo caduca cada llave y cuándo se usó por última vez. Una llave
+que no se usa desde hace meses es una llave que sobra.
+
 ## El primer responsable (arranque)
 
 **No existe** —ni existirá— un camino tipo «si no hay usuarios, el primero que
@@ -126,5 +164,10 @@ A partir de ahí, esa persona invita al resto desde la interfaz.
   el tiempo de respuesta lo delataría igual.
 - **Cambiar la contraseña revoca todas las sesiones abiertas**: si te la robaron,
   cambiarla tiene que servir de algo.
-- **Registro de auditoría** de entrada, salida, invitación y cambio de perfil.
+- **Las llaves de Claude son de la persona, no del medio**: se crean siempre a
+  nombre de quien está dentro, guardan solo su huella (sha256), se pueden acotar
+  a solo lectura y mueren en el acto al revocarlas. Suspender a alguien también
+  mata sus llaves, no solo su sesión.
+- **Registro de auditoría** de entrada, salida, invitación, cambio de perfil y
+  todo lo que hace una llave (crearla, revocarla, y cada borrador que escribe).
   Cuando algo se publique mal, la pregunta será quién y cuándo.

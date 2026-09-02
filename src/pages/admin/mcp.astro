@@ -1,0 +1,233 @@
+---
+import Admin from '../../layouts/Admin.astro';
+import { CSRF_COOKIE, can } from '../../lib/auth/core';
+import { issueMcpToken, listMcpTokens, revokeMcpToken } from '../../lib/auth/store';
+import { SCOPES } from '../../lib/mcp/protocol';
+import { DEFAULT_LOCALE, fmtNumber, t } from '../../lib/i18n';
+import { formatDate } from '../../lib/format';
+
+// Where a key comes from. A token nobody can mint is not a feature, and a psql
+// recipe in a document is not an interface.
+//
+// The route is /admin/mcp because `mcp` is an acronym: it sidesteps the
+// Spanish-route / English-filename tension entirely. It is under /admin and NOT
+// in the middleware's ADMIN_PUBLIC whitelist, so it is session-gated with no
+// middleware change.
+export const prerender = false;
+const locale = DEFAULT_LOCALE;
+const user = Astro.locals.user!;
+
+// Checked HERE, on the server. That the dashboard hides the link from whoever
+// may not mint a key is cosmetics; whoever types the URL meets a 403.
+if (!can(user.role, 'mcp:token')) return new Response(null, { status: 403 });
+
+const EXPIRY_DAYS = [30, 90, 365];
+const DEFAULT_DAYS = 90;
+const MAX_NAME = 120;
+
+// The clear token, shown exactly once and never stored: the row keeps its
+// sha256. It is rendered as its own <code> element and never interpolated into
+// a translated sentence — a secret is not copy.
+let created: string | null = null;
+let notice: string | null = null;
+let error: string | null = null;
+
+if (Astro.request.method === 'POST') {
+  // The body was read once by the middleware; a page never calls formData().
+  const form = Astro.locals.form!;
+  const action = String(form.get('action') ?? 'create');
+
+  if (action === 'revoke') {
+    // Integer-checked before it reaches pg: a crafted `id` would otherwise send
+    // NaN for a bigint and surface as a 500 on the newsroom. And the answer
+    // follows what actually happened — telling somebody a key "stops working
+    // instantly" when no row matched is the one lie this page must not tell.
+    const id = Number(form.get('id'));
+    const revoked = Number.isInteger(id) && id > 0 && await revokeMcpToken(id, user.id);
+    if (revoked) notice = t(locale, 'admin.mcp.revoked');
+    else error = t(locale, 'admin.mcp.revoke-failed');
+  } else {
+    const name = String(form.get('name') ?? '').trim();
+    if (!name) {
+      error = t(locale, 'admin.mcp.no-name');
+    } else {
+      // A key is ALWAYS minted for whoever is signed in, never on behalf of
+      // somebody else, so what it writes carries their by-line.
+      const wanted = form.getAll('scope').map(String);
+      const scopes = ['content:read', ...(wanted.includes('stories:write') ? ['stories:write'] : [])];
+      // "Never" is the one value that may produce a non-expiring key, and it has
+      // to be asked for by name. Anything unrecognised falls back to the default
+      // 90 days: a hand-crafted `expiry=99999` must not be the way to mint a key
+      // that never dies.
+      const raw = String(form.get('expiry') ?? '');
+      const chosen = Number(raw);
+      const expiresAt = raw === 'never' ? null
+        : new Date(Date.now() + (EXPIRY_DAYS.includes(chosen) ? chosen : DEFAULT_DAYS) * 86_400_000);
+      created = await issueMcpToken(user.id, name.slice(0, MAX_NAME), scopes, expiresAt);
+    }
+  }
+}
+
+const tokens = await listMcpTokens(user.id);
+const endpoint = new URL('/api/mcp', Astro.site ?? Astro.url.origin).href;
+const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
+
+// Written as two explicit literals and NOT as t(locale, `admin.mcp.scope-${s}`):
+// content.test.mjs harvests dynamic key families with a pattern that needs the
+// captured prefix to end in a dot, and `admin.mcp.scope-` ends in a hyphen — so
+// a template would orphan both keys and fail the build.
+const SCOPE_LABEL: Record<string, string> = {
+  'content:read': t(locale, 'admin.mcp.scope-read'),
+  'stories:write': t(locale, 'admin.mcp.scope-write'),
+};
+/** «90 días» / «90 days» without a key per number: the unit comes from Intl,
+ *  so it is translated by the same machinery that formats every other figure. */
+const expiryLabel = (n: number) =>
+  fmtNumber(locale, n, { style: 'unit', unit: 'day', unitDisplay: 'long' });
+---
+
+<Admin title={t(locale, 'admin.acc.mcp')} user={user}>
+  <h1>{t(locale, 'admin.acc.mcp')}</h1>
+  <p class="intro">{t(locale, 'admin.mcp.intro')}</p>
+
+  {notice && <p class="ok" role="status">{notice}</p>}
+  {error && <p class="error" role="alert">{error}</p>}
+
+  {created && (
+    <div class="secret" role="status">
+      <p>{t(locale, 'admin.mcp.created')}</p>
+      <code class="token">{created}</code>
+      <p class="endpoint-label">{t(locale, 'admin.mcp.url')}</p>
+      <code class="url">{endpoint}</code>
+    </div>
+  )}
+
+  <form method="post" class="form">
+    <input type="hidden" name="csrf" value={csrf} />
+    <input type="hidden" name="action" value="create" />
+
+    <label>
+      {t(locale, 'admin.mcp.name')}
+      <input type="text" name="name" required maxlength={MAX_NAME} />
+    </label>
+
+    <label>
+      {t(locale, 'admin.mcp.expiry')}
+      <select name="expiry">
+        {EXPIRY_DAYS.map((d) => (
+          <option value={d} selected={d === DEFAULT_DAYS}>{expiryLabel(d)}</option>
+        ))}
+        <option value="never">{t(locale, 'admin.mcp.expiry-never')}</option>
+      </select>
+    </label>
+
+    <fieldset class="scopes">
+      <legend>{t(locale, 'admin.mcp.scope')}</legend>
+      {SCOPES.map((scope) => (
+        <label class="check">
+          {/* Reading is what every key is for, so it is ticked and fixed;
+              writing is offered off. A disabled control does not submit, and
+              the server adds `content:read` regardless. */}
+          <input
+            type="checkbox"
+            name="scope"
+            value={scope}
+            checked={scope === 'content:read'}
+            disabled={scope === 'content:read'}
+          />
+          {SCOPE_LABEL[scope]}
+        </label>
+      ))}
+      <p class="help">{t(locale, 'admin.mcp.publish-help')}</p>
+    </fieldset>
+
+    <button class="btn" type="submit">{t(locale, 'admin.mcp.create')}</button>
+  </form>
+
+  {tokens.length === 0 ? (
+    <p class="empty">{t(locale, 'admin.mcp.none')}</p>
+  ) : (
+    <ul class="keys">
+      {tokens.map((token) => (
+        <li class="key">
+          <div class="meta">
+            <p class="name">{token.name}</p>
+            <p class="scope">{token.scopes.map((scope) => SCOPE_LABEL[scope] ?? scope).join(' · ')}</p>
+            <dl>
+              <dt>{t(locale, 'admin.mcp.expiry')}</dt>
+              <dd>
+                {token.expiresAt
+                  ? <time datetime={token.expiresAt}>{formatDate(locale, token.expiresAt)}</time>
+                  : t(locale, 'admin.mcp.expiry-never')}
+              </dd>
+              <dt>{t(locale, 'admin.mcp.last-used')}</dt>
+              <dd>
+                {token.lastUsedAt
+                  ? <time datetime={token.lastUsedAt}>{formatDate(locale, token.lastUsedAt)}</time>
+                  : t(locale, 'admin.mcp.never-used')}
+              </dd>
+            </dl>
+          </div>
+          <form method="post">
+            <input type="hidden" name="csrf" value={csrf} />
+            <input type="hidden" name="action" value="revoke" />
+            <input type="hidden" name="id" value={token.id} />
+            <button class="btn btn-ghost" type="submit">{t(locale, 'admin.mcp.revoke')}</button>
+          </form>
+        </li>
+      ))}
+    </ul>
+  )}
+</Admin>
+
+<style>
+  h1 { font-size: 1.75rem; }
+  .intro { color: var(--muted); margin-block: var(--space-2) var(--space-4); max-width: 60ch; }
+
+  .secret {
+    display: grid; gap: var(--space-2);
+    padding: var(--space-4); margin-block-end: var(--space-4);
+    background: var(--surface); border: 1px solid var(--ok-strong); border-radius: var(--radius);
+  }
+  .secret p { margin: 0; }
+  .endpoint-label { color: var(--muted); font-size: 0.875rem; }
+  /* The token breaks anywhere it has to: it does not fit on one line and it
+     cannot overflow the box on a phone. */
+  code.token, code.url {
+    display: block; padding: var(--space-3);
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.875rem;
+    overflow-wrap: anywhere;
+  }
+
+  .form { display: grid; gap: var(--space-3); max-width: 480px; margin-block-end: var(--space-5); }
+  label { display: grid; gap: var(--space-1); font-size: 0.9375rem; }
+  input[type='text'], select {
+    min-height: 44px; padding: var(--space-2) var(--space-3); font: inherit; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .scopes {
+    display: grid; gap: var(--space-2);
+    padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  legend { padding-inline: var(--space-2); font-size: 0.9375rem; }
+  .check { display: flex; flex-direction: row; align-items: flex-start; gap: var(--space-2); font-size: 0.9375rem; }
+  .help { margin: 0; color: var(--muted); font-size: 0.875rem; }
+
+  .empty { color: var(--muted); }
+  .keys { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); max-width: 640px; }
+  .key {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .meta { min-width: 0; }
+  .name { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+  .scope { margin-block: var(--space-1) var(--space-2); color: var(--muted); font-size: 0.875rem; }
+  dl { display: grid; grid-template-columns: auto auto; gap: var(--space-1) var(--space-3); margin: 0; font-size: 0.875rem; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+
+  .ok { padding: var(--space-3); border: 1px solid var(--ok-strong); border-radius: var(--radius); color: var(--ok-strong); margin-block-end: var(--space-4); }
+  .error { padding: var(--space-3); border: 1px solid var(--danger-strong); border-radius: var(--radius); color: var(--danger-strong); margin-block-end: var(--space-4); }
+</style>

@@ -73,6 +73,13 @@ export async function getAuthor(locale: Locale): Promise<AuthorView> {
   return authorView(author, locale);
 }
 
+/** Every by-line of the portal. It exists because the MCP `list_authors` tool
+ *  has to go through the read gate like every page does, instead of reaching
+ *  for the snapshot itself. */
+export async function getAuthors(locale: Locale): Promise<AuthorView[]> {
+  return SOURCE().authors.map((author) => authorView(author, locale));
+}
+
 /** El destacado del día. Nunca devuelve undefined: sin portada no hay home. */
 export async function getLeadStory(locale: Locale): Promise<StoryView> {
   const lead = SOURCE().stories.find((s) => s.lead) ?? [...SOURCE().stories].sort(newestFirst)[0];

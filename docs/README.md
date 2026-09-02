@@ -16,16 +16,25 @@ Documentation for Brotea News, the server-rendered Astro portal.
   vs editorial content, the section components, the theme and formatting rules,
   day grouping in the outlet's timezone (`src/lib/dates.ts`), and where tests
   must live.
+- [mcp.md](./mcp.md) — the MCP server at `POST /api/mcp`: the transport
+  decisions (JSON only, no SSE, stateless, no batching, the two protocol
+  versions), the bearer-key model with its scopes, expiry and revocation — and
+  why OAuth is deferred —, the eight tools with their inputs and outputs, how to
+  mint a key at `/admin/mcp`, the Claude Code and desktop client snippets, a
+  `curl` transcript of a whole session, what no tool can do (publish, edit a
+  published story, touch subscribers or users) and the degraded modes.
 - [redaccion.md](./redaccion.md) *(in Spanish)* — the newsroom as its people use
   it: invitation-only access, what each role can do, the day-grouped story list,
   writing and previewing a story in Markdown one language at a time in the
   two-column editor, publishing, marking the lead and pulling a story off the
-  site, plus the first-owner bootstrap and what the session, CSRF and password
-  design protect.
+  site, creating and revoking a Claude key (and why no key can publish), plus
+  the first-owner bootstrap and what the session, CSRF and password design
+  protect.
 - [deployment.md](./deployment.md) — how it ships: the three-stage Dockerfile
   (node runtime, no nginx) and its `api/newsletter` build gate, the
   `DATABASE_URL` and SMTP runtime variables, the migrations applied at boot
-  (`001_content`, `002_newsletter`), the `runtime` service contract in
+  (`001_content`, `002_newsletter`, `003_auth`, `005_mcp_tokens`), the `runtime`
+  service contract in
   `brotea.json` that CI and Coolify both read, the Coolify configuration
   (dockerfile build pack, port 4321, `is_static=false`), the URL and caching
   scheme, and the release process with its two required workflows.
