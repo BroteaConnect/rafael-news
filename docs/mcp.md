@@ -19,11 +19,11 @@ src/locales/mcp.test.mjs  the tests for protocol.ts
 | | |
 | --- | --- |
 | URL | `https://rafael-news.brotea.dev/api/mcp` |
-| Method | `POST` only. `GET` / `DELETE` / `OPTIONS` answer `405` with `Allow: POST` |
+| Method | `POST` only. `GET` / `DELETE` / `OPTIONS` answer `405` with `Allow: POST` and a one-line JSON hint, so a person poking at the URL does not get a `404` that looks like a broken portal |
 | Auth | `Authorization: Bearer mcp_…` on **every** call, `initialize` and `tools/list` included |
 | Body | one JSON-RPC 2.0 message. **Batches are refused** (`-32600`) — the 2025-06-18 revision removed them |
-| Response | always `application/json`, `Cache-Control: no-store`, plus `MCP-Protocol-Version` |
-| Max body | 128 KB → `413` |
+| Response | every JSON-RPC answer is `application/json` with `Cache-Control: no-store` and an `MCP-Protocol-Version` header (`initialize` answers with the version it just agreed) |
+| Max body | 128 KB → `413`, checked against `Content-Length` first and against the bytes actually read second: the header is absent under chunked encoding and can simply be wrong |
 
 ### Transport decisions
 
@@ -59,8 +59,27 @@ They are not interchangeable, and the difference is what lets a model recover:
 
 | Channel | Used for | Shape |
 | --- | --- | --- |
-| JSON-RPC `error` | unknown method (`-32601`), unknown tool or invalid arguments (`-32602`), unparseable body (`-32700`), batch (`-32600`), unauthorized (`-32001`), unavailable (`-32002`), rate limited (`-32003`), internal (`-32603`) | `{"jsonrpc":"2.0","id":…,"error":{"code":…,"message":…}}` |
-| A normal result with `isError` | "no story with that slug", "this key cannot write", "that story is published" | `{"content":[{"type":"text","text":"…"}],"isError":true}` |
+| JSON-RPC `error` | the call itself is wrong or cannot be served: bad body, unknown method, unknown tool, invalid arguments, no key | `{"jsonrpc":"2.0","id":…,"error":{"code":…,"message":…}}` |
+| A normal result with `isError` | the call was well formed and the answer is a refusal: "no story with that slug", "this key cannot write", "that story is published" | `{"content":[{"type":"text","text":"…"}],"isError":true}` |
+
+Every error code, with the HTTP status it travels on:
+
+| Code | HTTP | When |
+| --- | --- | --- |
+| `-32700` | `400` | the body is not JSON |
+| `-32600` | `400` | valid JSON that is not a JSON-RPC object — a scalar, or an array (batching) |
+| `-32600` | `413` | the body is over 128 KB |
+| `-32001` | `401` | no bearer, or an unknown, revoked or expired key. Carries `WWW-Authenticate` |
+| `-32002` | `503` | no `DATABASE_URL`, or the key could not be verified against Postgres |
+| `-32003` | `429` | rate limited |
+| `-32601` | `200` | `method not found: <method>` — only `initialize`, `ping`, `tools/list` and `tools/call` exist |
+| `-32602` | `200` | `unknown tool: <name>`, or arguments that fail the tool's own schema |
+| `-32603` | `200` | the tool threw. The message is logged and never returned: a stack trace is a map of the app |
+
+A method that reached the dispatcher answers `200` even when its payload is an
+error object — the transport worked, the call did not. Only the failures that
+happen *before* dispatch (auth, size, parsing, rate limiting) carry a
+non-`200` status.
 
 A successful `tools/call` returns **both** shapes of payload:
 `structuredContent` (the 2025-06-18 form) and a `content` array whose text is
@@ -85,7 +104,16 @@ password reset. A connector with that lifetime is the wrong shape.
 
 A `401` carries `WWW-Authenticate: Bearer realm="rafael-news",
 error="invalid_request"`, which is what lets a client tell "not authenticated"
-from "server broken".
+from "server broken". There are two of them, and neither says whether the key
+exists:
+
+| Request | Body message |
+| --- | --- |
+| no `Authorization` header, or one that is not exactly `Bearer <token>` (the scheme is compared case-insensitively) | `unauthorized: send Authorization: Bearer <token>` |
+| a key that is unknown, revoked, past its `expires_at`, or held by a user whose `users.status` is no longer `active` | `unauthorized: unknown, revoked or expired key` |
+
+The token check runs first, before `DATABASE_URL` is even consulted: a request
+with no bearer gets the `401` whether or not the database is there.
 
 **OAuth is deliberately deferred.** There is no authorization server, no
 dynamic client registration and no RFC 9728 protected-resource metadata. This
@@ -180,6 +208,14 @@ Notes that are decisions, not omissions:
 
 - **One `list_stories` with filters instead of four list tools.** Tool-list
   bloat is what makes a model pick the wrong one.
+- **`search_stories` matches the headline, the standfirst and the topic name,
+  never the body**, accent- and case-insensitively (`fold()`). `total` counts
+  everything that matched, before `limit` cut the list — a model can tell
+  "three results" from "three of ninety".
+- **`topic` and `author` accept an id or a slug.** A slug is translated content
+  (`mercados`, not `markets`), so both are taken: a model that has just read
+  `list_topics` can filter with exactly what it read. An unresolvable one comes
+  back as an `isError` result that lists the valid topics.
 - **`day` is a calendar day in Europe/Madrid**, computed with `dayKey()` from
   `src/lib/dates.ts`. Grouping in UTC files a 23:30 Madrid story under the next
   day.
@@ -195,8 +231,20 @@ Notes that are decisions, not omissions:
   snapshot only carries published stories. `create_draft` returns the `id` and
   the `editUrl`; use those.
 - **`update_draft` merges.** Fields the call leaves out keep the value stored in
-  `story_i18n` — `SaveInput` has no optional fields, so passing `undefined`
-  would blank the row.
+  `story_i18n` for that `locale`, and `topic` / `relevance` keep what the
+  `stories` row already carries — `SaveInput` has no optional fields, so passing
+  `undefined` would blank the row. It edits **one language at a time**, the same
+  way the newsroom editor does: writing the English version cannot overwrite the
+  Spanish one.
+- **A new draft is created with `relevance: medium`.** `create_draft` takes no
+  relevance argument; `update_draft` does (`high`, `medium`, `low`).
+- **A `create_draft` that fails halfway takes its own row back.**
+  `createStory()` commits before `saveStory()` opens its transaction, so a
+  failure between the two would leave a text-less story showing as
+  `(sin título)` in `/admin/noticias` — one more per model retry.
+  `discardEmptyStory(id)` deletes it before the error travels, and it deletes
+  only a draft with no `story_i18n` row at all: anything carrying text is
+  somebody's work and stays exactly where it is.
 
 ### What no tool can do
 
@@ -221,7 +269,7 @@ Notes that are decisions, not omissions:
 
 | Situation | Behaviour |
 | --- | --- |
-| No `DATABASE_URL` | `503` with `-32002`: there is nothing to authenticate against and there is no seed to pretend with, the same degraded mode `POST /api/newsletter` has. This is why `npm run gate:web`, which blanks `DATABASE_URL`, never calls this route |
+| No `DATABASE_URL` | `503` with `-32002` for a request that carries a bearer — a request without one still gets the `401`, since the token check comes first. There is nothing to authenticate against and no seed to pretend with, the same degraded mode `POST /api/newsletter` has. This is why `npm run gate:web`, which blanks `DATABASE_URL`, never calls this route |
 | Postgres unreachable | `503` as well; the public site keeps serving from the snapshot |
 | Snapshot stale (the `LISTEN` connection is down) | Read tools answer from the last snapshot. Every row carries `publishedAt` and `get_market` carries `stale`, so the age is visible rather than implied. The listener retries every 5 s |
 
@@ -279,6 +327,11 @@ belongs to the story-video feature.
 
 Partial index on `user_id WHERE revoked_at IS NULL`: only live keys are ever
 listed.
+
+Deploying it is deploying the app: `migrate()` applies `005_mcp_tokens` at boot,
+there is **no new environment variable**, no second process and no second
+container. The endpoint exists as soon as an image with this commit boots with
+`DATABASE_URL` set.
 
 ## Testing
 

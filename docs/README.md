@@ -19,10 +19,11 @@ Documentation for Brotea News, the server-rendered Astro portal.
 - [mcp.md](./mcp.md) — the MCP server at `POST /api/mcp`: the transport
   decisions (JSON only, no SSE, stateless, no batching, the two protocol
   versions), the bearer-key model with its scopes, expiry and revocation — and
-  why OAuth is deferred —, the eight tools with their inputs and outputs, how to
-  mint a key at `/admin/mcp`, the Claude Code and desktop client snippets, a
-  `curl` transcript of a whole session, what no tool can do (publish, edit a
-  published story, touch subscribers or users) and the degraded modes.
+  why OAuth is deferred —, every error code with its HTTP status and the two
+  `401`s, the eight tools with their inputs and outputs, how to mint a key at
+  `/admin/mcp`, the Claude Code and desktop client snippets, a `curl` transcript
+  of a whole session, what no tool can do (publish, edit a published story,
+  touch subscribers or users) and the degraded modes.
 - [redaccion.md](./redaccion.md) *(in Spanish)* — the newsroom as its people use
   it: invitation-only access, what each role can do, the day-grouped story list,
   writing and previewing a story in Markdown one language at a time in the
@@ -34,10 +35,9 @@ Documentation for Brotea News, the server-rendered Astro portal.
   (node runtime, no nginx) and its `api/newsletter` build gate, the
   `DATABASE_URL` and SMTP runtime variables, the migrations applied at boot
   (`001_content`, `002_newsletter`, `003_auth`, `005_mcp_tokens`), the `runtime`
-  service contract in
-  `brotea.json` that CI and Coolify both read, the Coolify configuration
-  (dockerfile build pack, port 4321, `is_static=false`), the URL and caching
-  scheme, and the release process with its two required workflows.
+  service contract in `brotea.json` that CI and Coolify both read, the Coolify
+  configuration (dockerfile build pack, port 4321, `is_static=false`), the URL
+  and caching scheme, and the release process with its two required workflows.
 - [gate-web.md](./gate-web.md) *(in Spanish)* — `npm run gate:web`, the speed and
   accessibility gate that fails a PR from its own workflow
   (`.github/workflows/calidad-web.yml`): it boots the built server without
