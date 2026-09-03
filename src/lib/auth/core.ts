@@ -84,6 +84,104 @@ export function csrfMatches(fromCookie: unknown, fromForm: unknown): boolean {
   return timingSafeEqual(Buffer.from(fromCookie), Buffer.from(fromForm));
 }
 
+// -- Google sign-in (OAuth 2.0 / OpenID Connect) --------------------------------
+// The pure half of the Google flow: what can be tested without a network. The
+// fetch to Google lives in google.ts, and the routes under /admin/entrar/google
+// only glue the two together.
+//
+// state, nonce and PKCE verifier travel in ONE short-lived cookie, not in a
+// table: an OAuth attempt is a write any anonymous visitor could trigger, and a
+// cookie expires on its own with nothing to clean up. The path is the route's
+// own so the browser sends it nowhere else.
+export const GOOGLE_OAUTH_COOKIE = 'brotea_google_oauth';
+export const GOOGLE_OAUTH_MINUTES = 10;
+const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
+const GOOGLE_ISSUERS = new Set(['accounts.google.com', 'https://accounts.google.com']);
+/** Google's `exp` is honest, but two clocks never agree to the second. */
+const ID_TOKEN_SKEW_MS = 60_000;
+
+export interface OauthState { state: string; nonce: string; verifier: string }
+export const newOauthState = (): OauthState =>
+  ({ state: newToken(), nonce: newToken(), verifier: newToken() });
+
+/** PKCE S256: the challenge Google sees is the sha256 of the verifier only the
+ *  callback knows, so a stolen authorization code cannot be redeemed alone. */
+export const pkceChallenge = (verifier: string): string =>
+  createHash('sha256').update(verifier).digest('base64url');
+
+export function googleAuthUrl(params: {
+  clientId: string; redirectUri: string; state: string; nonce: string; challenge: string;
+}): string {
+  const url = new URL(GOOGLE_AUTH_ENDPOINT);
+  url.search = new URLSearchParams({
+    client_id: params.clientId,
+    redirect_uri: params.redirectUri,
+    response_type: 'code',
+    // `openid email` and nothing more: the newsroom needs a verified address to
+    // match an invited user, not a profile. Non-sensitive scopes also spare the
+    // consent screen a verification review.
+    scope: 'openid email',
+    state: params.state,
+    nonce: params.nonce,
+    code_challenge: params.challenge,
+    code_challenge_method: 'S256',
+    prompt: 'select_account',
+  }).toString();
+  return url.href;
+}
+
+export type IdTokenProblem =
+  | 'malformed' | 'issuer' | 'audience' | 'expired' | 'nonce' | 'unverified' | 'claims';
+export type ParsedIdToken =
+  | { ok: true; sub: string; email: string }
+  | { ok: false; reason: IdTokenProblem };
+
+/** Reads the claims of Google's ID token and checks them: issuer, audience,
+ *  expiry (with skew), nonce and that the email is VERIFIED.
+ *
+ *  No signature check, on purpose and spec-backed: OpenID Connect Core 3.1.3.7
+ *  rule 6 lets the client skip signature validation when the token arrives by
+ *  direct TLS communication with the token endpoint, which is exactly how
+ *  google.ts obtains it (server-side fetch with the client secret). A JWT
+ *  library here would be a dependency that verifies what TLS already did.
+ *
+ *  `email_verified` must be boolean `true`: Google issues `false` for some
+ *  non-Gmail identities, and a string "true" is not a claim, it is a bug. */
+export function parseIdToken(
+  raw: unknown, expected: { clientId: string; nonce: string; now: Date },
+): ParsedIdToken {
+  if (typeof raw !== 'string') return { ok: false, reason: 'malformed' };
+  const parts = raw.split('.');
+  if (parts.length !== 3 || !parts[1]) return { ok: false, reason: 'malformed' };
+  let claims: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, reason: 'malformed' };
+    claims = parsed as Record<string, unknown>;
+  } catch {
+    return { ok: false, reason: 'malformed' };
+  }
+  if (typeof claims.iss !== 'string' || !GOOGLE_ISSUERS.has(claims.iss)) return { ok: false, reason: 'issuer' };
+  if (claims.aud !== expected.clientId) return { ok: false, reason: 'audience' };
+  if (typeof claims.exp !== 'number' || claims.exp * 1000 + ID_TOKEN_SKEW_MS <= expected.now.getTime()) {
+    return { ok: false, reason: 'expired' };
+  }
+  if (!csrfMatches(expected.nonce, claims.nonce)) return { ok: false, reason: 'nonce' };
+  if (claims.email_verified !== true) return { ok: false, reason: 'unverified' };
+  if (typeof claims.sub !== 'string' || !claims.sub || typeof claims.email !== 'string' || !claims.email) {
+    return { ok: false, reason: 'claims' };
+  }
+  return { ok: true, sub: claims.sub, email: claims.email };
+}
+
+/** What /admin/entrar may say about a failed Google attempt. A closed map: the
+ *  query value is never reflected into HTML or a Location header, it either
+ *  names one of these or it names nothing. */
+export type GoogleFailure = 'cancelled' | 'state' | 'unknown' | 'failed';
+const GOOGLE_FAILURES: readonly GoogleFailure[] = ['cancelled', 'state', 'unknown', 'failed'];
+export const googleFailureFromQuery = (value: unknown): GoogleFailure | null =>
+  GOOGLE_FAILURES.includes(value as GoogleFailure) ? (value as GoogleFailure) : null;
+
 // -- Roles ---------------------------------------------------------------------
 export type Role = 'journalist' | 'editor' | 'owner';
 export const ROLES: readonly Role[] = ['journalist', 'editor', 'owner'];

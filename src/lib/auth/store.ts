@@ -48,15 +48,61 @@ export async function login(email: string, password: string, ip: string, ua: str
     await audit('login.failed', user?.id ?? null, { email }, ip);
     return null;
   }
+  // pg returns bigint as a string; both doors hand startSession the same type.
+  return startSession(Number(user.id), ip, ua, 'password');
+}
+
+export type LoginProvider = 'password' | 'google';
+
+/** Opens a session for a user who has ALREADY been authenticated, whichever
+ *  door they came through, and returns the token in clear for the cookie.
+ *  Always a fresh token: a pre-authentication value reused here would be a
+ *  session fixation. */
+export async function startSession(
+  userId: number, ip: string, ua: string, provider: LoginProvider,
+): Promise<string> {
   const token = newToken();
   await db().query(
     `INSERT INTO sessions (user_id, token_hash, expires_at, ip, user_agent)
      VALUES ($1,$2,$3,$4,$5)`,
-    [user.id, hashToken(token), sessionExpiry(new Date()), ip, ua.slice(0, 300)],
+    [userId, hashToken(token), sessionExpiry(new Date()), ip, ua.slice(0, 300)],
   );
-  await db().query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
-  await audit('login.ok', user.id, {}, ip);
+  await db().query('UPDATE users SET last_login_at = now() WHERE id = $1', [userId]);
+  await audit('login.ok', userId, { provider }, ip);
   return token;
+}
+
+// -- Google identity -----------------------------------------------------------
+// Google never creates an account. It may open one that an invitation already
+// created, matched by the sub it was pinned to or, the first time, by the
+// verified email. The decision of whether that match is acceptable is the
+// callback's; this only fetches what it needs to decide.
+
+export interface GoogleCandidate { id: number; status: string; googleSub: string | null }
+
+/** The user a Google identity could sign in as, or null. A `google_sub` match
+ *  wins over an email match: the pinned identity is the stronger claim, and an
+ *  address that changed hands on Google's side must not open the old account. */
+export async function userForGoogle(sub: string, email: string): Promise<GoogleCandidate | null> {
+  const { rows } = await db().query(
+    `SELECT id, status, google_sub FROM users
+     WHERE google_sub = $1 OR email = $2
+     ORDER BY (google_sub = $1) IS TRUE DESC
+     LIMIT 1`, [sub, email],
+  );
+  const row = rows[0];
+  return row ? { id: Number(row.id), status: row.status, googleSub: row.google_sub ?? null } : null;
+}
+
+/** Pins a Google account to a user. `google_sub IS NULL` in the WHERE is not
+ *  decoration: a link happens once, and never overwrites another one. */
+export async function linkGoogle(userId: number, sub: string, ip?: string): Promise<boolean> {
+  const { rowCount } = await db().query(
+    'UPDATE users SET google_sub = $2, google_linked_at = now(), updated_at = now() WHERE id = $1 AND google_sub IS NULL',
+    [userId, sub],
+  );
+  if (rowCount) await audit('google.linked', userId, {}, ip);
+  return Boolean(rowCount);
 }
 
 /** La sesión de una cookie, o null. Renueva la caducidad (deslizante) y de paso

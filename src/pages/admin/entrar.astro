@@ -1,6 +1,8 @@
 ---
 import Admin from '../../layouts/Admin.astro';
-import { CSRF_COOKIE, RateLimiter, SESSION_COOKIE, newCsrf, sessionExpiry } from '../../lib/auth/core';
+import { CSRF_COOKIE, RateLimiter, googleFailureFromQuery } from '../../lib/auth/core';
+import { setSessionCookies } from '../../lib/auth/cookies';
+import { googleConfigured } from '../../lib/auth/google';
 import { configured, login } from '../../lib/auth/store';
 import { DEFAULT_LOCALE, t } from '../../lib/i18n';
 
@@ -31,15 +33,7 @@ if (Astro.request.method === 'POST') {
     const token = await login(email, password, ip, Astro.request.headers.get('user-agent') ?? '');
     if (token) {
       porCuenta.clear(email);
-      Astro.cookies.set(SESSION_COOKIE, token, {
-        path: '/', httpOnly: true, sameSite: 'lax', secure: import.meta.env.PROD,
-        expires: sessionExpiry(new Date()),
-      });
-      // Cookie de CSRF nueva por sesión: reutilizar la anterior deja válido un
-      // token que pudo quedarse en un ordenador compartido.
-      Astro.cookies.set(CSRF_COOKIE, newCsrf(), {
-        path: '/', httpOnly: false, sameSite: 'lax', secure: import.meta.env.PROD, maxAge: 86400,
-      });
+      setSessionCookies(Astro.cookies, token);
       return Astro.redirect('/admin', 303);
     }
     // Mensaje ÚNICO: distinguir «no existe» de «contraseña incorrecta»
@@ -48,6 +42,15 @@ if (Astro.request.method === 'POST') {
   }
 }
 
+// A failed Google attempt comes back here with `?google=<code>`. The code goes
+// through a closed map: an unknown value shows nothing and reflects nothing.
+if (!error) {
+  const google = googleFailureFromQuery(Astro.url.searchParams.get('google'));
+  if (google) error = t(locale, `admin.entrar.google.${google}`);
+}
+
+// Not configured means not there: no button, and the route answers 404.
+const withGoogle = googleConfigured();
 const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
 ---
 
@@ -66,6 +69,18 @@ const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
     </label>
     <button class="btn" type="submit">{t(locale, 'admin.entrar.enviar')}</button>
   </form>
+  {withGoogle && (
+    <>
+      <p class="divider">{t(locale, 'admin.entrar.google.divider')}</p>
+      {/* A POST, like signing out: the CSRF field is what stops another site
+          from starting a sign-in on your behalf. Text only, no logo: the
+          newsroom keeps one primary action and no hardcoded brand colours. */}
+      <form method="post" action="/admin/entrar/google" class="google">
+        <input type="hidden" name="csrf" value={csrf} />
+        <button class="btn btn-ghost" type="submit">{t(locale, 'admin.entrar.google.button')}</button>
+      </form>
+    </>
+  )}
   <p class="ayuda">{t(locale, 'admin.entrar.ayuda')}</p>
 </Admin>
 
@@ -83,5 +98,20 @@ const csrf = Astro.cookies.get(CSRF_COOKIE)?.value ?? '';
     border: 1px solid var(--danger-strong); border-radius: var(--radius);
     color: var(--danger-strong);
   }
+  /* One word between two hairlines, the width of the form above it. */
+  .divider {
+    display: flex; align-items: center; gap: var(--space-3);
+    max-width: 380px; margin-block: var(--space-4);
+    color: var(--muted); font-size: 0.875rem;
+  }
+  .divider::before, .divider::after {
+    content: ''; flex: 1; border-block-start: 1px solid var(--border);
+  }
+  .google { max-width: 380px; }
+  .google .btn { width: 100%; }
+  /* Press feedback on both doors, interruptible and from the theme's tokens;
+     the redirect that follows is the feedback that is not motion. */
+  .btn { transition: transform var(--duration-press) var(--ease-out); }
+  .btn:active { transform: scale(var(--press-scale)); }
   .ayuda { margin-block-start: var(--space-4); color: var(--muted); font-size: 0.875rem; max-width: 48ch; }
 </style>

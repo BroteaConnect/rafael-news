@@ -12,6 +12,28 @@ un solo uso, caduca en 72 horas y quien lo recibe elige su contraseña y el
 nombre con el que firma. Aceptar la invitación crea a la vez el usuario y su
 ficha pública de autor: quien entra en una redacción viene a firmar.
 
+### Entrar con Google
+
+Debajo del formulario hay un botón «Continuar con Google», y abre la **misma**
+sesión que la contraseña: misma cookie, misma caducidad, mismo «salir». Lo que
+no hace, ni hará, es **crear cuentas**: Google solo abre una cuenta que una
+invitación ya creó. La primera vez que entras así, la redacción busca un usuario
+activo con el correo que Google dice haber verificado, lo enlaza a esa cuenta de
+Google y a partir de ahí es esa cuenta, y no el correo, la que abre la tuya. Si
+el correo de Google no es de nadie de la redacción, o es de alguien suspendido,
+la página lo dice y no pasa nada más.
+
+Dos cosas que conviene saber:
+
+- Si el botón **no aparece**, es que la instalación no tiene configurado el
+  acceso con Google (son dos variables que pone quien despliega; ver
+  [deployment.md](./deployment.md#runtime-env-google-sign-in)). No es un fallo:
+  la contraseña sigue funcionando igual.
+- Si Google responde «acceso denegado» a una cuenta que sí está invitada, lo más
+  probable es que la pantalla de consentimiento del proyecto de Google siga en
+  modo *pruebas* y esa cuenta no esté en su lista de usuarios de prueba. Eso se
+  arregla en la consola de Google, no en la redacción.
+
 ## Roles
 
 | | journalist | editor | owner |
@@ -164,6 +186,10 @@ A partir de ahí, esa persona invita al resto desde la interfaz.
   el tiempo de respuesta lo delataría igual.
 - **Cambiar la contraseña revoca todas las sesiones abiertas**: si te la robaron,
   cambiarla tiene que servir de algo.
+- **Google no abre puertas nuevas**: solo entra quien ya fue invitado, solo si
+  Google afirma que el correo está verificado, y una cuenta enlazada a una
+  identidad de Google no se abre con otra aunque el correo coincida. El intento
+  entero vive en una cookie de diez minutos que se gasta al primer uso.
 - **Las llaves de Claude son de la persona, no del medio**: se crean siempre a
   nombre de quien está dentro, guardan solo su huella (sha256), se pueden acotar
   a solo lectura y mueren en el acto al revocarlas. Suspender a alguien también

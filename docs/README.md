@@ -25,7 +25,8 @@ Documentation for Brotea News, the server-rendered Astro portal.
   of a whole session, what no tool can do (publish, edit a published story,
   touch subscribers or users) and the degraded modes.
 - [redaccion.md](./redaccion.md) *(in Spanish)* — the newsroom as its people use
-  it: invitation-only access, what each role can do, the day-grouped story list,
+  it: invitation-only access, signing in with Google (which never creates an
+  account), what each role can do, the day-grouped story list,
   writing and previewing a story in Markdown one language at a time in the
   two-column editor, publishing, marking the lead and pulling a story off the
   site, creating and revoking a Claude key (and why no key can publish), plus
@@ -33,8 +34,10 @@ Documentation for Brotea News, the server-rendered Astro portal.
   protect.
 - [deployment.md](./deployment.md) — how it ships: the three-stage Dockerfile
   (node runtime, no nginx) and its `api/newsletter` build gate, the
-  `DATABASE_URL` and SMTP runtime variables, the migrations applied at boot
-  (`001_content`, `002_newsletter`, `003_auth`, `005_mcp_tokens`), the `runtime`
+  `DATABASE_URL`, SMTP and `GOOGLE_*` runtime variables (with the one-off
+  Google Cloud Console setup), the migrations applied at boot
+  (`001_content`, `002_newsletter`, `003_auth`, `005_mcp_tokens`,
+  `006_google_identity`), the `runtime`
   service contract in `brotea.json` that CI and Coolify both read, the Coolify
   configuration (dockerfile build pack, port 4321, `is_static=false`), the URL
   and caching scheme, and the release process with its two required workflows.
