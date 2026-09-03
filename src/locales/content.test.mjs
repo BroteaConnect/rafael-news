@@ -111,6 +111,8 @@ const DYNAMIC = {
   'a11y.market.': ['up', 'down', 'flat'],
   'admin.rol.': ['journalist', 'editor', 'owner'],
   'admin.noticias.': ['borrador', 'programada', 'publicada', 'archivada'],
+  // The closed map of GoogleFailure in src/lib/auth/core.ts.
+  'admin.entrar.google.': ['cancelled', 'state', 'unknown', 'failed'],
 };
 
 test('toda clave que piden los componentes existe en los dos diccionarios', () => {

@@ -67,7 +67,8 @@ The newsletter and the newsroom are the parts that do need the database live:
 
 There is no migration command and no console in the runtime image. `migrate()`
 in `src/lib/content/db.ts` runs every entry of its `MIGRATIONS` list at boot —
-today `['001_content', '002_newsletter', '003_auth', '005_mcp_tokens']` — so
+today `['001_content', '002_newsletter', '003_auth', '005_mcp_tokens',
+'006_google_identity']` — so
 **deploying is applying the migration**. `002_newsletter.sql` creates the
 `newsletter_subscribers` table and its indexes, and needs `CREATE EXTENSION IF
 NOT EXISTS citext`: the database role must be allowed to create the extension,
@@ -85,8 +86,16 @@ authenticates with against `POST /api/mcp` (see [mcp.md](./mcp.md)). It depends
 on `003_auth` having created `users`, which it references with
 `ON DELETE CASCADE`. It is numbered `005` because `004` belongs to the
 story-video feature; the number is bookkeeping for humans, the version string is
-what `schema_migrations` stores. There is **no new environment variable**: like
-sessions, the keys derive everything from the database and `node:crypto`.
+what `schema_migrations` stores. MCP keys need **no environment variable of
+their own**: like sessions, they derive everything from the database and
+`node:crypto`.
+
+`006_google_identity.sql` (feature 68) adds `users.google_sub` and
+`users.google_linked_at` plus a partial unique index on `google_sub`, so one
+Google account can never open two newsroom accounts. It depends on `003_auth`
+having created `users`, and it is inert until the two `GOOGLE_*` variables
+below are set: the column exists, nothing writes it. It creates no user either
+— Google only opens an account an invitation already created.
 
 Every migration is re-executed on every boot, which is why each one *must* be
 idempotent: they use `CREATE TABLE IF NOT EXISTS`, `CREATE EXTENSION IF NOT
@@ -147,21 +156,65 @@ sin configurar: no se envía "<subject>"` and returns `false`.
 
 Same for a send that fails: logged, never thrown.
 
-There are **no new environment variables** for the newsroom, nor for the MCP
-server. Sessions, invitations, password hashing and MCP keys derive everything
-from the database and `node:crypto` — there is no signing secret to set or
-rotate. The one behaviour
-tied to the build is the `Secure` flag on the session and CSRF cookies, which
-comes from `import.meta.env.PROD`: the Docker image is a production build, so
-the flag is on in every deployed environment and off in `npm run dev`.
+Sessions, invitations, password hashing and MCP keys derive everything from
+the database and `node:crypto` — there is no signing secret to set or rotate.
+The newsroom's only variables are the optional Google pair in the next section.
+The one behaviour tied to the build is the `Secure` flag on the session, CSRF
+and Google-attempt cookies, which comes from `import.meta.env.PROD`: the Docker
+image is a production build, so the flag is on in every deployed environment
+and off in `npm run dev`.
 
 ```bash
 docker run -p 8080:4321 \
   -e DATABASE_URL='postgres://…' \
   -e SMTP_HOST='smtp-relay.example.com' -e SMTP_USER='…' -e SMTP_PASS='…' \
   -e MAIL_FROM='boletin@rafael-news.brotea.dev' \
+  -e GOOGLE_CLIENT_ID='…' -e GOOGLE_CLIENT_SECRET='…' \
   rafael-news
 ```
+
+## Runtime env: Google sign-in
+
+"Sign in with Google" on `/admin/entrar` (feature 68) is an OAuth 2.0 /
+OpenID Connect authorization-code flow with PKCE, server-side. It needs an OAuth
+client created by a human in Google Cloud Console and two **runtime** variables,
+never build ARGs and never `PUBLIC_*`: the secret must not reach the image, and
+the newsroom ships no JavaScript that could use the id anyway.
+
+| Variable | Required | Used for |
+| --- | --- | --- |
+| `GOOGLE_CLIENT_ID` | for the button | the OAuth client id (`…apps.googleusercontent.com`) |
+| `GOOGLE_CLIENT_SECRET` | for the button | the client secret, sent only server-to-server to Google's token endpoint |
+
+Both are read once, in `src/lib/auth/google.ts`, and nowhere else. **With either
+missing the feature is inert**: the button is not rendered, `POST
+/admin/entrar/google` and `GET /admin/entrar/google/callback` answer `404`, and
+nothing is logged per request. The password form keeps working. That is also
+why CI never sees the Google branch: `npm run gate:web` boots the server with no
+env at all.
+
+The redirect URI is built from `site` in `astro.config.mjs`
+(`https://rafael-news.brotea.dev/admin/entrar/google/callback`), never from the
+request's origin, which is `http://localhost` behind the node adapter. The
+consequence is that `npm run dev` cannot complete a Google sign-in unless a
+second URI is registered on the client; accepted.
+
+Google Cloud Console, done once by a person:
+
+1. OAuth consent screen: **External** (a `gmail.com` account cannot be Internal
+   without Workspace), scopes `openid` and `email` only. Non-sensitive scopes
+   need no verification review to publish. **If the screen stays in *Testing*,
+   every account not listed as a test user is refused with `access_denied`**,
+   which the page reports as a cancelled attempt — add the newsroom's addresses
+   as test users or publish the screen.
+2. Credentials: an OAuth client of type **Web application** with the authorized
+   redirect URI exactly `https://rafael-news.brotea.dev/admin/entrar/google/callback`.
+   No authorized JavaScript origin (server-side flow).
+3. Coolify: set both variables as runtime env vars and redeploy.
+
+No account is ever created by Google: the verified email must already belong to
+an `active` user (see [redaccion.md](./redaccion.md#entrar-con-google)), so an
+address that has not accepted an invitation gets `admin.entrar.google.unknown`.
 
 No variable carries the base URL of the links in those emails — confirmation,
 unsubscribe or invitation: they all come from `site` in `astro.config.mjs`,
@@ -206,7 +259,9 @@ pipeline runs it: it is a one-off, per environment.
 - Runtime env vars, never build ones: `DATABASE_URL` pointing at the app's
   Postgres service, plus `SMTP_HOST` / `SMTP_USER` / `SMTP_PASS` (and
   optionally `SMTP_PORT`, `MAIL_FROM`) for the newsletter's confirmation email
-  and the newsroom's invitations. Nothing else: the newsroom adds no variables.
+  and the newsroom's invitations, plus `GOOGLE_CLIENT_ID` /
+  `GOOGLE_CLIENT_SECRET` if the newsroom is to offer "Sign in with Google"
+  (see [Runtime env: Google sign-in](#runtime-env-google-sign-in)). Nothing else.
 - Source: `BroteaConnect/rafael-news`, branch `main`.
 
 ## URLs

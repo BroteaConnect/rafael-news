@@ -12,6 +12,7 @@ import migration001 from '../../migrations/001_content.sql?raw';
 import migration002 from '../../migrations/002_newsletter.sql?raw';
 import migration003 from '../../migrations/003_auth.sql?raw';
 import migration005 from '../../migrations/005_mcp_tokens.sql?raw';
+import migration006 from '../../migrations/006_google_identity.sql?raw';
 import seedData from './seed.data.json';
 import type { ContentSource, Localized, Story, TopicId } from './types';
 
@@ -20,6 +21,7 @@ const MIGRATIONS: ReadonlyArray<readonly [string, string]> = [
   ['002_newsletter', migration002],
   ['003_auth', migration003],
   ['005_mcp_tokens', migration005],
+  ['006_google_identity', migration006],
 ];
 
 let pool: pg.Pool | null = null;

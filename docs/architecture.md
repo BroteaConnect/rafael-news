@@ -55,6 +55,9 @@ and every `/admin` response ships `Cache-Control: no-store` and
 
 | Route | Behaviour |
 | --- | --- |
+| `GET/POST /admin/entrar` | the sign-in form; with `?google=<code>` it shows the outcome of a failed Google attempt (see [Sign in with Google](#sign-in-with-google)) |
+| `POST /admin/entrar/google` | starts the Google flow: sets the `brotea_google_oauth` cookie and `302`s to Google; `404` when `GOOGLE_*` is unset |
+| `GET /admin/entrar/google/callback` | where Google returns: `303` to `/admin` with a session, or to `/admin/entrar?google=<code>`; `404` when unset |
 | `GET /admin/noticias` | story list grouped by day; `story:any` sees the whole newsroom, anyone else only their own |
 | `POST /admin/noticias` | creates a draft and `303`-redirects to `/admin/noticias/<id>` |
 | `GET /admin/noticias/<id>` | the editor; `?idioma=<code>` selects which language row is being edited (default locale if absent or unknown) |
@@ -265,13 +268,16 @@ Besides being less to maintain, it guarantees that the newsroom bundle can never
 leak into a public page, because it does not exist.
 
 ```
-src/lib/auth/core.ts        crypto and rules: scrypt, tokens, CSRF, roles, rate limiter
-src/lib/auth/store.ts       Postgres: login, sessions, invites, profile, resets, audit
+src/lib/auth/core.ts        crypto and rules: scrypt, tokens, CSRF, roles, rate limiter, the pure half of the Google flow
+src/lib/auth/store.ts       Postgres: login, sessions, invites, profile, resets, Google identity, audit
+src/lib/auth/google.ts      the only module that talks to Google: GOOGLE_* env, the code-for-token exchange
+src/lib/auth/cookies.ts     setSessionCookies(): the session + fresh CSRF cookies both sign-in doors set
 src/lib/auth/mail.ts        invite / reset emails (copy over the shared transport)
 src/middleware.ts           session resolution, CSRF, the /admin guard, no-store + noindex
 src/layouts/Admin.astro     newsroom chrome: title, robots meta, identity bar, sign-out form
-src/pages/admin/*           the pages listed in Routes
+src/pages/admin/*           the pages listed in Routes (entrar/google.ts and entrar/google/callback.ts are the Google routes)
 src/migrations/003_auth.sql the schema
+src/migrations/006_google_identity.sql  users.google_sub + google_linked_at
 src/locales/auth.test.mjs   the tests for core.ts
 ```
 
@@ -292,7 +298,10 @@ node. `store.ts` is queries only.
    any page code runs.
 4. **Guard** — `/admin/*` without a session → `302` to `/admin/entrar`. The
    public list is a **whitelist** (`entrar|salir|aceptar|restablecer`), not a
-   blacklist, so a route added tomorrow is protected by default.
+   blacklist, so a route added tomorrow is protected by default. The pattern
+   ends in `(\/|$)`, which is what admits `/admin/entrar/google` and
+   `/admin/entrar/google/callback` without a regex change: they are the
+   sign-in route's own sub-paths.
 5. Issues a CSRF cookie on any `/admin` request that arrives without one.
 6. After rendering: `/admin` responses get `Cache-Control: no-store` and
    `X-Robots-Tag: noindex, nofollow` and return early — they never get an ETag,
@@ -359,7 +368,89 @@ either.
 
 Both outcomes are audited (`login.ok` / `login.failed`), and a success also
 stamps `users.last_login_at`, mints a **fresh** CSRF cookie (reusing the old one
-leaves a valid token behind on a shared computer) and `303`s to `/admin`.
+leaves a valid token behind on a shared computer) and `303`s to `/admin`. That
+last part — the session row, `last_login_at`, the audit and the cookies — is
+`startSession()` in `store.ts` plus `setSessionCookies()` in `cookies.ts`, and
+the Google callback below calls exactly the same two functions: two doors, one
+session.
+
+### Sign in with Google
+
+A second door into the same `sessions` row and the same `brotea_sesion`
+cookie: OAuth 2.0 / OpenID Connect, authorization-code flow with PKCE,
+confidential client, entirely server-side (the newsroom still ships no
+JavaScript). **Google never creates an account.** A Google identity may sign in
+only when its *verified* email already belongs to an `active` user, which is
+the mailbox an invitation was once mailed to — so trusting Google's claim on
+that same mailbox adds no new trust boundary.
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant A as /admin/entrar/google
+  participant G as Google
+  participant C as /admin/entrar/google/callback
+  B->>A: POST (csrf field)
+  A-->>B: Set-Cookie brotea_google_oauth = state.nonce.verifier; 302 to Google
+  B->>G: consent screen (openid email, S256 challenge, nonce)
+  G-->>B: 302 callback?code&state
+  B->>C: GET (cookie + query)
+  C->>C: delete cookie, state compared in constant time
+  C->>G: POST /token (code, verifier, client secret), 5 s timeout
+  G-->>C: id_token
+  C->>C: parseIdToken: iss, aud, exp, nonce, email_verified === true
+  C->>C: userForGoogle(sub, email): active user, sub not pinned elsewhere
+  C-->>B: session + fresh CSRF cookies; 303 /admin
+```
+
+- **Start is a `POST`**, so the middleware's double-submit CSRF check covers
+  it: nobody can start a sign-in for you from another site (login CSRF).
+- **`state`, `nonce` and the PKCE verifier live in one cookie**, not in a
+  table: `brotea_google_oauth`, `httpOnly`, `SameSite=Lax` (**required**, not
+  merely acceptable: the callback is a top-level navigation from Google and
+  `Strict` would strip the cookie from it), `path=/admin/entrar/google`,
+  10 minutes, deleted on the first callback whatever its outcome. An OAuth
+  attempt is a write any anonymous visitor could trigger; a cookie expires on
+  its own.
+- **The redirect URI comes from `site`**, never from `context.url`: behind the
+  node adapter `url.origin` is `http://localhost`, which Google rejects.
+- **No signature check on the ID token, and no JWT library.** OpenID Connect
+  Core 3.1.3.7 rule 6 permits TLS validation of the token endpoint in place
+  of signature verification when the token arrives by direct
+  client-to-token-endpoint communication, which is exactly this flow.
+  `parseIdToken()` in `core.ts` still checks `iss`, `aud`, `exp` (60 s skew),
+  `nonce` (constant time) and that `email_verified` is boolean `true` — Google
+  issues `false` for some non-Gmail identities, and anything but `true` is a
+  failure. It is the pure half and is fully covered by `auth.test.mjs`.
+- **Matching, then pinning.** `userForGoogle(sub, email)` looks up by
+  `google_sub` first (the pinned identity wins) and by `email` second. The
+  callback refuses a missing user, a user who is not `active`, and a user whose
+  `google_sub` is already another value (the address changed hands on Google's
+  side). The first successful match with a `NULL` `google_sub` is linked
+  (`linkGoogle()`, audited as `google.linked`); from then on it is the `sub`,
+  not the address, that opens the account.
+- **Every outcome is a redirect and the failure codes are a closed map**
+  (`GoogleFailure`: `cancelled | state | unknown | failed`). The query value
+  is filtered through `googleFailureFromQuery()` before it is ever used in a
+  `Location` header or rendered, so nothing is reflected. Success always lands
+  on `/admin`: there is no `next` parameter, and this feature does not add one.
+  A Postgres error or a slow Google (`AbortSignal.timeout(5000)`) is
+  `?google=failed`, never a `500`.
+- **Fresh session, fresh CSRF cookie**, through `startSession()` and
+  `setSessionCookies()` — the same code the password form runs, so a
+  pre-authentication value is never promoted into a session (fixation).
+- **Rate limited per IP** (`20 per 5 min`, in memory) on the callback: no
+  scrypt here, so the lever is not CPU but the audit log.
+- **Inert without `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`** (read once in
+  `google.ts`): the button is not rendered and both routes answer `404`. CI
+  therefore never renders the Google branch of `entrar.astro`; the `.error`
+  block is shared so the `gate:web` budget stays representative. Setup and
+  the Testing-mode trap are in
+  [deployment.md](./deployment.md#runtime-env-google-sign-in).
+
+`unknown` tells the person that *their own* Google account is not in the
+newsroom, which enumerates nobody else — unlike the password form, whose single
+message has to stay generic.
 
 Rate limits are in-memory, per process, sliding window — the same `RateLimiter`
 shape the newsletter uses, declared in `core.ts`:
@@ -481,9 +572,11 @@ the action it audits** — a failed insert is logged and swallowed — and the a
 is nullable on purpose, because a failed sign-in has no user and is exactly the
 kind of thing worth recording.
 
-Actions written today: `login.ok`, `login.failed`, `logout`, `user.invited`,
-`user.accepted_invite`, `profile.updated`, `password.reset`, `mcp.token.issued`,
-`mcp.token.revoked`, `mcp.draft.created`, `mcp.draft.updated`.
+Actions written today: `login.ok` (payload `provider: password | google`),
+`login.failed` (Google refusals carry `provider: 'google'` and a `reason`),
+`logout`, `user.invited`, `user.accepted_invite`, `profile.updated`,
+`password.reset`, `google.linked`, `mcp.token.issued`, `mcp.token.revoked`,
+`mcp.draft.created`, `mcp.draft.updated`.
 
 ### Data model
 
@@ -493,7 +586,7 @@ by `002_newsletter`.
 
 | Table | Columns |
 | --- | --- |
-| `users` | `id` PK, `email` `citext` UNIQUE, `password_hash` (the `scrypt$…` string), `role` (`journalist\|editor\|owner`, default `journalist`), `status` (`invited\|active\|suspended`, default `invited`), `author_id` → `authors(id)` `ON DELETE SET NULL`, `created_at`, `updated_at`, `last_login_at` |
+| `users` | `id` PK, `email` `citext` UNIQUE, `password_hash` (the `scrypt$…` string), `role` (`journalist\|editor\|owner`, default `journalist`), `status` (`invited\|active\|suspended`, default `invited`), `author_id` → `authors(id)` `ON DELETE SET NULL`, `created_at`, `updated_at`, `last_login_at`; since `006_google_identity`: `google_sub` (nullable, partial UNIQUE index `WHERE google_sub IS NOT NULL`) and `google_linked_at` |
 | `invites` | `id` PK, `email` `citext`, `role`, `token_hash` UNIQUE, `invited_by` → `users(id)`, `expires_at`, `accepted_at`, `created_at`; partial index on `email WHERE accepted_at IS NULL` |
 | `sessions` | `id` PK, `user_id` → `users(id)` `ON DELETE CASCADE`, `token_hash` UNIQUE, `created_at`, `last_seen_at`, `expires_at`, `revoked_at`, `ip`, `user_agent`; partial index on `user_id WHERE revoked_at IS NULL` |
 | `password_resets` | `id` PK, `user_id` → `users(id)` `ON DELETE CASCADE`, `token_hash` UNIQUE, `expires_at`, `used_at`, `created_at` |
