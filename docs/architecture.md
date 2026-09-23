@@ -835,6 +835,40 @@ images and no raw HTML, and nothing about its allowed subset changed: pasting a
 YouTube link into the body still produces an `<a>`, and the player only ever
 comes from `video_id`.
 
+How `[id].astro` turns the `video` field into the `videoId` it hands to
+`saveStory()` on `accion=guardar`:
+
+| Field in the POST | Stored `video_id` | Notice |
+| --- | --- | --- |
+| absent (a tab opened before the field existed, any other poster) | unchanged | `admin.noticias.guardada` |
+| empty or whitespace | `NULL`, so the video is removed | `admin.noticias.guardada` |
+| parses | the parsed id | `admin.noticias.guardada` |
+| does not parse | unchanged. The rest of the story is saved anyway | `admin.noticias.video-malo`, and the field keeps what was typed so it can be fixed |
+
+Treating an absent field and an empty field differently is what keeps a stale tab
+from wiping a video someone else attached.
+
+Known limits, stated as limits:
+
+- **No Content-Security-Policy is sent** by the middleware or by
+  `astro.config.mjs`, so the iframe needs no allowance today. Any future CSP
+  must include `frame-src https://www.youtube-nocookie.com`, or the play button
+  will load a blocked frame.
+- **The video appears only on the story page.** `videoId` is not in
+  `/rss.xml`, `/sitemap.xml`, the `NewsArticle` JSON-LD, the search index, the
+  cards or the home hero, and no MCP tool reads or writes it (see
+  [mcp.md](./mcp.md)).
+- **Invisible characters are not stripped.** `trim()` removes surrounding
+  whitespace, but a zero-width character copied along with a link or an id
+  (U+200B, for instance) makes it fail `VIDEO_ID`. The save is then treated as
+  "does not parse", as in the table above.
+- **The seeded video belongs to a third party.** `seed.data.json` gives the
+  lead story (`bce-tipos-septiembre`) `videoId: "5ILi4_ss544"`. That is what
+  local dev, CI and `gate:web` render, and what `seedIfEmpty()` writes to an
+  empty database. `content.test.mjs` checks only its shape. If YouTube takes the
+  video down, the facade still renders, and the player shows YouTube's
+  "unavailable" message once someone presses play. Nothing in CI fetches it.
+
 ## MCP server
 
 `POST /api/mcp` lets Claude, running in somebody else's client, read the portal

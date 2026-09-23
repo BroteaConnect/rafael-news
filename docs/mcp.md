@@ -236,6 +236,11 @@ Notes that are decisions, not omissions:
   `undefined` would blank the row. It edits **one language at a time**, the same
   way the newsroom editor does: writing the English version cannot overwrite the
   Spanish one.
+- **No tool carries the story's YouTube video.** `get_story` does not return
+  `videoId`, and neither write tool accepts one. `create_draft` saves
+  `videoId: null`. `update_draft` writes back the `video_id` already on the row,
+  so a model's edit never clears a video the desk attached. Attaching,
+  changing or removing a video happens in the `/admin/noticias/<id>` editor.
 - **A new draft is created with `relevance: medium`.** `create_draft` takes no
   relevance argument; `update_draft` does (`high`, `medium`, `low`).
 - **A `create_draft` that fails halfway takes its own row back.**

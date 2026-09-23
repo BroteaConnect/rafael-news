@@ -10,8 +10,10 @@ Documentation for Brotea News, the server-rendered Astro portal.
   (`src/lib/newsroom/store.ts`, the story-level permission check, slug at
   publish time, the single lead, `src/lib/markdown.ts`: escape-first
   rendering into `body_html`, the allowed subset and the link-scheme filter, and
-  `src/lib/youtube.ts`: the link parser behind a story's optional YouTube video
-  and the click-to-load facade that renders it), the
+  `src/lib/youtube.ts`: the link parser behind a story's optional YouTube video,
+  how the editor saves the field, the click-to-load facade that renders it,
+  and the feature's known limits: no CSP yet, story page only, and a
+  third-party seeded video), the
   newsletter's double opt-in (`POST /api/newsletter`, `newsletter_subscribers`,
   token lifecycle, rate limits), the two newsroom screens (day-grouped list with
   stretched-link rows, two-column editor with its `form=` publish controls), copy
@@ -25,7 +27,8 @@ Documentation for Brotea News, the server-rendered Astro portal.
   `401`s, the eight tools with their inputs and outputs, how to mint a key at
   `/admin/mcp`, the Claude Code and desktop client snippets, a `curl` transcript
   of a whole session, what no tool can do (publish, edit a published story,
-  touch subscribers or users) and the degraded modes.
+  touch subscribers or users), why no tool carries a story's YouTube video,
+  and the degraded modes.
 - [redaccion.md](./redaccion.md) *(in Spanish)* — the newsroom as its people use
   it: invitation-only access, signing in with Google (which never creates an
   account), what each role can do, the day-grouped story list,
