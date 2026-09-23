@@ -3,6 +3,7 @@ import Admin from '../../../layouts/Admin.astro';
 import { CSRF_COOKIE, can } from '../../../lib/auth/core';
 import { getDraft, publish, saveStory, unpublish } from '../../../lib/newsroom/store';
 import { renderMarkdown } from '../../../lib/markdown';
+import { parseYouTubeId, watchUrl } from '../../../lib/youtube';
 import { TOPICS } from '../../../lib/content/types';
 import { getTopics } from '../../../lib/content/store';
 import { DEFAULT_LOCALE, LOCALES, localePath, t } from '../../../lib/i18n';
@@ -26,12 +27,25 @@ const idioma = LOCALES.includes(editando ?? '') ? String(editando) : DEFAULT_LOC
 
 let aviso: string | null = null;
 let error: string | null = null;
+// What the journalist typed, kept across the POST: the page re-reads `draft`
+// afterwards, so without this a rejected link would vanish from the field and
+// they would have nothing to correct.
+let videoRaw: string | null = null;
 
 if (Astro.request.method === 'POST') {
   const form = Astro.locals.form!;
   const accion = String(form.get('accion') ?? 'guardar');
 
   if (accion === 'guardar') {
+    // An ABSENT field and an EMPTY one are not the same thing. Empty is the
+    // desk deliberately removing the video; absent is a form that never had
+    // the input — a tab opened before this shipped, or anything posting the
+    // story without it. Collapsing both into '' would let a stale tab wipe a
+    // video someone else attached, and report it as a clean save.
+    const videoField = form.get('video');
+    videoRaw = videoField === null ? null : String(videoField).trim();
+    const videoId = videoRaw === null || videoRaw === '' ? null : parseYouTubeId(videoRaw);
+    const videoMalo = videoRaw !== null && videoRaw !== '' && videoId === null;
     await saveStory({
       id,
       locale: idioma,
@@ -42,8 +56,13 @@ if (Astro.request.method === 'POST') {
         ? String(form.get('tema')) : TOPICS[0]) as never,
       relevance: (['high', 'medium', 'low'].includes(String(form.get('relevancia')))
         ? String(form.get('relevancia')) : 'medium') as never,
+      // A link that does not parse must not cost the desk the body they just
+      // wrote: everything else is saved and the previous video is kept. It is
+      // the same call this repo already made when SMTP fails on an invite.
+      videoId: videoRaw === null || videoMalo ? draft.videoId : videoId,
     });
-    aviso = t(locale, 'admin.noticias.guardada');
+    if (videoMalo) error = t(locale, 'admin.noticias.video-malo');
+    else aviso = t(locale, 'admin.noticias.guardada');
   } else if (accion === 'publicar' && puedePublicar) {
     const result = await publish(id, DEFAULT_LOCALE, form.get('destacada') === 'si');
     if (result === 'ok') aviso = t(locale, 'admin.noticias.publicada-ok');
@@ -126,6 +145,16 @@ const vistaPrevia = renderMarkdown(texto.bodyMd);
             ))}
           </select>
         </label>
+        <label>
+          {t(locale, 'admin.noticias.video')}
+          <input type="text" name="video" maxlength="512" value={videoRaw ?? draft.videoId ?? ''} />
+          <small>{t(locale, 'admin.noticias.video-ayuda')}</small>
+        </label>
+        {draft.videoId && (
+          <a class="ver-video" href={watchUrl(draft.videoId)} target="_blank" rel="noopener">
+            {t(locale, 'admin.noticias.video-ver')}
+          </a>
+        )}
         <button class="btn" type="submit">{t(locale, 'admin.noticias.guardar')}</button>
       </div>
 
@@ -201,6 +230,7 @@ const vistaPrevia = renderMarkdown(texto.bodyMd);
   input[type='text'], select { min-height: 44px; }
   textarea[name='cuerpo'] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9375rem; line-height: 1.6; }
   small { color: var(--muted); }
+  .ver-video { font-size: 0.875rem; }
 
   /* Pegajoso: publicar es lo que más se usa y no puede quedarse arriba del
      todo mientras se escribe un cuerpo largo. */

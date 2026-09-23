@@ -53,6 +53,9 @@ export interface Story {
   standfirst: Localized;
   /** el destacado del día; exactamente uno */
   lead: boolean;
+  /** The 11-character YouTube id, never a URL. Language-neutral like `topicId`:
+   *  an id is not translated text. Absent = the story has no video. */
+  videoId?: string;
   /** cuerpo ya renderizado y saneado, por idioma. Opcional: una noticia sin
    *  cuerpo se muestra con su entradilla en vez de con un texto inventado */
   body?: Localized;
@@ -126,5 +129,8 @@ export interface StoryView {
   standfirst: string;
   /** HTML ya saneado, o cadena vacía si la redacción aún no lo escribió */
   body: string;
+  /** The 11-character YouTube id, or null when there is no video. A view
+   *  carries plain values, so the `Localized` rule does not apply here. */
+  videoId: string | null;
   author: AuthorView;
 }

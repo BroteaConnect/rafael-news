@@ -1,6 +1,7 @@
 ---
 import Layout from '../../../layouts/Layout.astro';
 import StoryGrid from '../../../components/StoryGrid.astro';
+import StoryVideo from '../../../components/StoryVideo.astro';
 import { getStoriesByTopic, getStory } from '../../../lib/content/store';
 import { formatDate } from '../../../lib/format';
 import { localePath, t } from '../../../lib/i18n';
@@ -53,6 +54,16 @@ const jsonLd = {
         <span>{t(locale, 'article.reading', { minutes: story.readingMinutes })}</span>
       </p>
     </header>
+
+    {/* Between the header and the body: the video is part of the story, not an
+        appendix. `measure` because it reads with the prose, not at the full
+        1200px of the shell. Story pages only — a card or the home hero would
+        put a third party where the weight budget is tightest. */}
+    {story.videoId && (
+      <div class="measure">
+        <StoryVideo locale={locale} videoId={story.videoId} title={story.title} />
+      </div>
+    )}
 
     {/* El cuerpo ya viene de la base de datos, saneado al guardarse. Mientras
         la redacción no lo escriba, la página dice qué le falta en vez de

@@ -91,6 +91,12 @@ test('hay exactamente una noticia destacada y todas tienen fecha válida', () =>
     assert.ok(!Number.isNaN(Date.parse(story.publishedAt)), `${story.id}: fecha ilegible`);
     assert.ok(story.readingMinutes > 0, `${story.id}: minutos de lectura sin sentido`);
     assert.ok(['high', 'medium', 'low'].includes(story.relevance), `${story.id}: relevancia inválida`);
+    // A seeded video id is the ONE id the gate and local dev ever render, and
+    // it goes straight into an iframe src. Same shape the CHECK constraint and
+    // the parser enforce; a URL pasted here would ship a broken player.
+    if (story.videoId !== undefined) {
+      assert.match(story.videoId, /^[A-Za-z0-9_-]{11}$/, `${story.id}: id de vídeo inválido`);
+    }
   }
 });
 

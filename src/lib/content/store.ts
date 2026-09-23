@@ -62,6 +62,7 @@ const storyView = (story: Story, locale: Locale): StoryView => {
     title: localize(story.title, locale),
     standfirst: localize(story.standfirst, locale),
     body: story.body ? localize(story.body, locale) : '',
+    videoId: story.videoId ?? null,
     author: authorView(authorOf(story.authorId), locale),
   };
 };

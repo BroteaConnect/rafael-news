@@ -271,6 +271,7 @@ async function createDraft(
       bodyMd: str(args.body_md) ?? '',
       topicId,
       relevance: 'medium',
+      videoId: null,
     });
   } catch (e) {
     await discardEmptyStory(id).catch((cleanup: Error) => {
@@ -330,6 +331,9 @@ async function updateDraft(
     bodyMd: str(args.body_md) ?? current.bodyMd,
     topicId,
     relevance: (str(args.relevance) as Relevance | undefined) ?? draft.relevance,
+    // No MCP tool carries a video: keep the one the desk attached, or this
+    // update would silently clear it.
+    videoId: draft.videoId,
   });
   await audit('mcp.draft.updated', principal.userId, {
     tokenId: principal.tokenId, storyId: id, locale,
