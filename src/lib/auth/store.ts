@@ -48,15 +48,61 @@ export async function login(email: string, password: string, ip: string, ua: str
     await audit('login.failed', user?.id ?? null, { email }, ip);
     return null;
   }
+  // pg returns bigint as a string; both doors hand startSession the same type.
+  return startSession(Number(user.id), ip, ua, 'password');
+}
+
+export type LoginProvider = 'password' | 'google';
+
+/** Opens a session for a user who has ALREADY been authenticated, whichever
+ *  door they came through, and returns the token in clear for the cookie.
+ *  Always a fresh token: a pre-authentication value reused here would be a
+ *  session fixation. */
+export async function startSession(
+  userId: number, ip: string, ua: string, provider: LoginProvider,
+): Promise<string> {
   const token = newToken();
   await db().query(
     `INSERT INTO sessions (user_id, token_hash, expires_at, ip, user_agent)
      VALUES ($1,$2,$3,$4,$5)`,
-    [user.id, hashToken(token), sessionExpiry(new Date()), ip, ua.slice(0, 300)],
+    [userId, hashToken(token), sessionExpiry(new Date()), ip, ua.slice(0, 300)],
   );
-  await db().query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
-  await audit('login.ok', user.id, {}, ip);
+  await db().query('UPDATE users SET last_login_at = now() WHERE id = $1', [userId]);
+  await audit('login.ok', userId, { provider }, ip);
   return token;
+}
+
+// -- Google identity -----------------------------------------------------------
+// Google never creates an account. It may open one that an invitation already
+// created, matched by the sub it was pinned to or, the first time, by the
+// verified email. The decision of whether that match is acceptable is the
+// callback's; this only fetches what it needs to decide.
+
+export interface GoogleCandidate { id: number; status: string; googleSub: string | null }
+
+/** The user a Google identity could sign in as, or null. A `google_sub` match
+ *  wins over an email match: the pinned identity is the stronger claim, and an
+ *  address that changed hands on Google's side must not open the old account. */
+export async function userForGoogle(sub: string, email: string): Promise<GoogleCandidate | null> {
+  const { rows } = await db().query(
+    `SELECT id, status, google_sub FROM users
+     WHERE google_sub = $1 OR email = $2
+     ORDER BY (google_sub = $1) IS TRUE DESC
+     LIMIT 1`, [sub, email],
+  );
+  const row = rows[0];
+  return row ? { id: Number(row.id), status: row.status, googleSub: row.google_sub ?? null } : null;
+}
+
+/** Pins a Google account to a user. `google_sub IS NULL` in the WHERE is not
+ *  decoration: a link happens once, and never overwrites another one. */
+export async function linkGoogle(userId: number, sub: string, ip?: string): Promise<boolean> {
+  const { rowCount } = await db().query(
+    'UPDATE users SET google_sub = $2, google_linked_at = now(), updated_at = now() WHERE id = $1 AND google_sub IS NULL',
+    [userId, sub],
+  );
+  if (rowCount) await audit('google.linked', userId, {}, ip);
+  return Boolean(rowCount);
 }
 
 /** La sesión de una cookie, o null. Renueva la caducidad (deslizante) y de paso
@@ -198,4 +244,101 @@ export async function applyReset(token: string, password: string): Promise<Accep
     [reset.user_id]);
   await audit('password.reset', reset.user_id, {});
   return 'ok';
+}
+
+// -- MCP keys ------------------------------------------------------------------
+// A second way of authenticating, so it lives beside sessionFromToken and not in
+// a module of its own: it reuses this file's pool, its crypto imports and
+// audit(). A fifth pg.Pool for four queries would not pay for itself.
+
+export interface McpPrincipal {
+  tokenId: number; userId: number; role: Role; authorId: string | null; scopes: string[];
+}
+
+/** A chatty client would otherwise turn every tool call into a write. */
+const LAST_USED_REFRESH_MS = 5 * 60_000;
+
+/** Who is behind an `Authorization: Bearer`, or null. Mirrors sessionFromToken,
+ *  including the check that the user is still `active`: suspending someone has
+ *  to kill their keys too, not only their browser. */
+export async function mcpPrincipalFromToken(token: string): Promise<McpPrincipal | null> {
+  const { rows } = await db().query(
+    `SELECT m.id AS token_id, m.token_hash, m.scopes, m.expires_at, m.last_used_at,
+            u.id AS user_id, u.role, u.status, u.author_id
+     FROM mcp_tokens m JOIN users u ON u.id = m.user_id
+     WHERE m.token_hash = $1 AND m.revoked_at IS NULL`, [hashToken(token)],
+  );
+  const row = rows[0];
+  if (!row || !tokenMatches(token, row.token_hash)) return null;
+  // NULL expiry = never expires; that is a decision of whoever minted the key.
+  if (row.expires_at && row.expires_at.getTime() <= Date.now()) return null;
+  if (row.status !== 'active') return null;
+
+  const lastUsed = row.last_used_at ? row.last_used_at.getTime() : 0;
+  if (Date.now() - lastUsed > LAST_USED_REFRESH_MS) {
+    // Best-effort, and deliberately not awaited into the answer: this is
+    // bookkeeping for the "last used" column on /admin/mcp. Letting it throw
+    // would turn a perfectly valid key into a 503 because a cosmetic UPDATE
+    // failed.
+    void db().query('UPDATE mcp_tokens SET last_used_at = now() WHERE id = $1', [row.token_id])
+      .catch((e: Error) => console.error('[mcp] could not stamp last_used_at:', e.message));
+  }
+  return {
+    tokenId: Number(row.token_id),
+    userId: Number(row.user_id),
+    role: row.role,
+    authorId: row.author_id,
+    scopes: row.scopes ?? [],
+  };
+}
+
+/** Mint a key. Returns the token in clear, which is the only moment it exists:
+ *  the row keeps its sha256, like sessions and invitations. The `mcp_` prefix is
+ *  for secret scanners and for whoever finds the string in a config file. */
+export async function issueMcpToken(
+  userId: number, name: string, scopes: string[], expiresAt: Date | null,
+): Promise<string> {
+  const token = `mcp_${newToken()}`;
+  const { rows } = await db().query(
+    `INSERT INTO mcp_tokens (user_id, name, token_hash, scopes, expires_at)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [userId, name, hashToken(token), scopes, expiresAt],
+  );
+  await audit('mcp.token.issued', userId, { tokenId: Number(rows[0].id), name, scopes });
+  return token;
+}
+
+export interface McpTokenRow {
+  id: number; name: string; scopes: string[];
+  createdAt: string; expiresAt: string | null; lastUsedAt: string | null;
+}
+
+/** The live keys of one person. Never the hash: it is not shown, not even to
+ *  its owner, because there is nothing useful to do with it. */
+export async function listMcpTokens(userId: number): Promise<McpTokenRow[]> {
+  const { rows } = await db().query(
+    `SELECT id, name, scopes, created_at, expires_at, last_used_at
+     FROM mcp_tokens WHERE user_id = $1 AND revoked_at IS NULL
+     ORDER BY created_at DESC`, [userId],
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    name: r.name,
+    scopes: r.scopes ?? [],
+    createdAt: new Date(r.created_at).toISOString(),
+    expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : null,
+    lastUsedAt: r.last_used_at ? new Date(r.last_used_at).toISOString() : null,
+  }));
+}
+
+/** Revoke. The `user_id` in the WHERE is not decoration: without it, anyone
+ *  signed in could revoke someone else's key by guessing an id. Takes effect on
+ *  the very next request, because the lookup carries `revoked_at IS NULL`. */
+export async function revokeMcpToken(id: number, userId: number): Promise<boolean> {
+  const { rowCount } = await db().query(
+    'UPDATE mcp_tokens SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL',
+    [id, userId],
+  );
+  if (rowCount) await audit('mcp.token.revoked', userId, { tokenId: id });
+  return Boolean(rowCount);
 }

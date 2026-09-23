@@ -1,23 +1,24 @@
-# Fuentes de brotea-news
+# brotea-news fonts
 
-Ambas se redistribuyen bajo **SIL Open Font License 1.1**, que permite
-incrustarlas y servirlas desde nuestro propio dominio (es justo lo que hace la
-app: `public/fonts/`, sin CDN).
+Both are redistributed under the **SIL Open Font License 1.1**, which allows
+embedding them and serving them from our own domain (which is exactly what the
+app does: `public/fonts/`, no CDN).
 
-| Fichero | Familia | Autoría | Subset |
+| File | Family | Author | Subset |
 |---|---|---|---|
-| `Newsreader-600-latin.woff2` | Newsreader | Production Type | latin, peso 600 · 23 KB |
+| `Newsreader-600-latin.woff2` | Newsreader | Production Type | latin, weight 600 · 23 KB |
 | `Inter-var-latin.woff2` | Inter | Rasmus Andersson | latin, variable 400–700 · 47 KB |
 
-Origen: los `.woff2` que sirve Google Fonts (`fonts.gstatic.com`) para el
-bloque `/* latin */` de cada familia. El `unicode-range` de `../fonts.css` es
-literalmente el que declara ese subset: un carácter fuera de él cae al
-fallback en vez de provocar una descarga.
+Origin: the `.woff2` files Google Fonts (`fonts.gstatic.com`) serves for each
+family's `/* latin */` block. The `unicode-range` in `../fonts.css` is
+literally the one that subset declares: a character outside it falls back
+instead of triggering a download.
 
-**Newsreader va en un solo peso, no variable, a propósito**: la variable con eje
-óptico pesa 129 KB frente a 23 KB del peso suelto, y en titulares no
-interpolamos. Inter sí va variable porque dos pesos sueltos suman 94 KB y la
-variable 47 KB. Total: 70 KB en dos ficheros.
+**Newsreader ships in a single weight, not variable, on purpose**: the variable
+one with an optical axis weighs 129 KB against 23 KB for the single weight, and
+we do not interpolate in headlines. Inter does ship variable because two single
+weights add up to 94 KB and the variable one is 47 KB. Total: 70 KB in two
+files.
 
-Si algún día hace falta recortar más, el siguiente paso es subsetear por
-glifos usados (`pyftsubset`), no cambiar de familia.
+If more trimming is ever needed, the next step is subsetting by used glyphs
+(`pyftsubset`), not changing family.

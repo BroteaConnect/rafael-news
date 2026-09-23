@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "composer": "0.5.0",
+  "composer": "0.7.0",
   "stack": "astro-ssr",
   "features": {
     "analytics": {
@@ -18,7 +18,7 @@
   },
   "theme": {
     "name": "brotea-news",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "i18n": {
     "defaultLocale": "es",
@@ -45,7 +45,7 @@
     "runtime": "1.0.0"
   },
   "quality": {
-    "version": "1.4.1"
+    "version": "1.5.0"
   },
   "runtime": {
     "port": 4321,

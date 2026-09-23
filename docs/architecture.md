@@ -39,6 +39,7 @@ Locale-agnostic endpoints (no language prefix):
 | --- | --- | --- |
 | `GET /healthz` | `src/pages/healthz.ts` | `200 {"ok":true,"commit":"<sha or null>"}`, `Cache-Control: no-store` |
 | `POST /api/newsletter` | `src/pages/api/newsletter.ts` | subscription request, double opt-in: `202` accepted, `400` invalid email, `429` rate limited, `500`/`503` (see [Newsletter](#newsletter-double-opt-in)) |
+| `POST /api/mcp` | `src/pages/api/mcp.ts` | the MCP server: JSON-RPC 2.0 over HTTP, `Authorization: Bearer` on every call, eight tools, no CORS header and no `Origin` check (see [mcp.md](./mcp.md)) |
 | `GET /rss.xml` | `src/pages/rss.xml.ts` | RSS 2.0 feed of every story, default locale only (`<language>es-ES</language>`) |
 | `GET /sitemap.xml` | `src/pages/sitemap.xml.ts` | every URL in every locale, each with `xhtml:link` hreflang alternates |
 
@@ -54,10 +55,15 @@ and every `/admin` response ships `Cache-Control: no-store` and
 
 | Route | Behaviour |
 | --- | --- |
+| `GET/POST /admin/entrar` | the sign-in form; with `?google=<code>` it shows the outcome of a failed Google attempt (see [Sign in with Google](#sign-in-with-google)) |
+| `POST /admin/entrar/google` | starts the Google flow: sets the `brotea_google_oauth` cookie and `302`s to Google; `404` when `GOOGLE_*` is unset |
+| `GET /admin/entrar/google/callback` | where Google returns: `303` to `/admin` with a session, or to `/admin/entrar?google=<code>`; `404` when unset |
 | `GET /admin/noticias` | story list grouped by day; `story:any` sees the whole newsroom, anyone else only their own |
 | `POST /admin/noticias` | creates a draft and `303`-redirects to `/admin/noticias/<id>` |
 | `GET /admin/noticias/<id>` | the editor; `?idioma=<code>` selects which language row is being edited (default locale if absent or unknown) |
 | `POST /admin/noticias/<id>` | `accion=guardar\|publicar\|despublicar` (see [Newsroom write path](#newsroom-write-path)) |
+| `GET /admin/mcp` | the MCP keys of whoever is signed in: name, scopes, expiry, last use |
+| `POST /admin/mcp` | `action=create\|revoke`; `create` shows the clear token exactly once (see [mcp.md](./mcp.md)) |
 
 Language resolution in every page is `resolveLocale(Astro.params.lang)` from
 `src/lib/route.ts`: no prefix → default locale, a published locale → that
@@ -237,6 +243,7 @@ every public page and fails if the response lacks `s-maxage` or `ETag`, if
 | `getTopics(locale)` | `TopicView[]` with published counts |
 | `getTopic(slug, locale)` | `TopicView \| null` — looked up by **slug**, not id |
 | `getAuthor(locale)` | `AuthorView` — the portal's single by-line |
+| `getAuthors(locale)` | `AuthorView[]` — every by-line; the read gate `list_authors` goes through |
 | `getAuthorBySlug(slug, locale)` | `AuthorView \| null` |
 | `getStoriesByAuthor(authorId, locale)` | `StoryView[]` |
 | `getSearchIndex(locale)` | `{ slug, title, standfirst, topic }[]` |
@@ -269,13 +276,16 @@ Besides being less to maintain, it guarantees that the newsroom bundle can never
 leak into a public page, because it does not exist.
 
 ```
-src/lib/auth/core.ts        crypto and rules: scrypt, tokens, CSRF, roles, rate limiter
-src/lib/auth/store.ts       Postgres: login, sessions, invites, profile, resets, audit
+src/lib/auth/core.ts        crypto and rules: scrypt, tokens, CSRF, roles, rate limiter, the pure half of the Google flow
+src/lib/auth/store.ts       Postgres: login, sessions, invites, profile, resets, Google identity, audit
+src/lib/auth/google.ts      the only module that talks to Google: GOOGLE_* env, the code-for-token exchange
+src/lib/auth/cookies.ts     setSessionCookies(): the session + fresh CSRF cookies both sign-in doors set
 src/lib/auth/mail.ts        invite / reset emails (copy over the shared transport)
 src/middleware.ts           session resolution, CSRF, the /admin guard, no-store + noindex
 src/layouts/Admin.astro     newsroom chrome: title, robots meta, identity bar, sign-out form
-src/pages/admin/*           the pages listed in Routes
+src/pages/admin/*           the pages listed in Routes (entrar/google.ts and entrar/google/callback.ts are the Google routes)
 src/migrations/003_auth.sql the schema
+src/migrations/006_google_identity.sql  users.google_sub + google_linked_at
 src/locales/auth.test.mjs   the tests for core.ts
 ```
 
@@ -296,7 +306,10 @@ node. `store.ts` is queries only.
    any page code runs.
 4. **Guard** — `/admin/*` without a session → `302` to `/admin/entrar`. The
    public list is a **whitelist** (`entrar|salir|aceptar|restablecer`), not a
-   blacklist, so a route added tomorrow is protected by default.
+   blacklist, so a route added tomorrow is protected by default. The pattern
+   ends in `(\/|$)`, which is what admits `/admin/entrar/google` and
+   `/admin/entrar/google/callback` without a regex change: they are the
+   sign-in route's own sub-paths.
 5. Issues a CSRF cookie on any `/admin` request that arrives without one.
 6. After rendering: `/admin` responses get `Cache-Control: no-store` and
    `X-Robots-Tag: noindex, nofollow` and return early — they never get an ETag,
@@ -363,7 +376,89 @@ either.
 
 Both outcomes are audited (`login.ok` / `login.failed`), and a success also
 stamps `users.last_login_at`, mints a **fresh** CSRF cookie (reusing the old one
-leaves a valid token behind on a shared computer) and `303`s to `/admin`.
+leaves a valid token behind on a shared computer) and `303`s to `/admin`. That
+last part — the session row, `last_login_at`, the audit and the cookies — is
+`startSession()` in `store.ts` plus `setSessionCookies()` in `cookies.ts`, and
+the Google callback below calls exactly the same two functions: two doors, one
+session.
+
+### Sign in with Google
+
+A second door into the same `sessions` row and the same `brotea_sesion`
+cookie: OAuth 2.0 / OpenID Connect, authorization-code flow with PKCE,
+confidential client, entirely server-side (the newsroom still ships no
+JavaScript). **Google never creates an account.** A Google identity may sign in
+only when its *verified* email already belongs to an `active` user, which is
+the mailbox an invitation was once mailed to — so trusting Google's claim on
+that same mailbox adds no new trust boundary.
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant A as /admin/entrar/google
+  participant G as Google
+  participant C as /admin/entrar/google/callback
+  B->>A: POST (csrf field)
+  A-->>B: Set-Cookie brotea_google_oauth = state.nonce.verifier; 302 to Google
+  B->>G: consent screen (openid email, S256 challenge, nonce)
+  G-->>B: 302 callback?code&state
+  B->>C: GET (cookie + query)
+  C->>C: delete cookie, state compared in constant time
+  C->>G: POST /token (code, verifier, client secret), 5 s timeout
+  G-->>C: id_token
+  C->>C: parseIdToken: iss, aud, exp, nonce, email_verified === true
+  C->>C: userForGoogle(sub, email): active user, sub not pinned elsewhere
+  C-->>B: session + fresh CSRF cookies; 303 /admin
+```
+
+- **Start is a `POST`**, so the middleware's double-submit CSRF check covers
+  it: nobody can start a sign-in for you from another site (login CSRF).
+- **`state`, `nonce` and the PKCE verifier live in one cookie**, not in a
+  table: `brotea_google_oauth`, `httpOnly`, `SameSite=Lax` (**required**, not
+  merely acceptable: the callback is a top-level navigation from Google and
+  `Strict` would strip the cookie from it), `path=/admin/entrar/google`,
+  10 minutes, deleted on the first callback whatever its outcome. An OAuth
+  attempt is a write any anonymous visitor could trigger; a cookie expires on
+  its own.
+- **The redirect URI comes from `site`**, never from `context.url`: behind the
+  node adapter `url.origin` is `http://localhost`, which Google rejects.
+- **No signature check on the ID token, and no JWT library.** OpenID Connect
+  Core 3.1.3.7 rule 6 permits TLS validation of the token endpoint in place
+  of signature verification when the token arrives by direct
+  client-to-token-endpoint communication, which is exactly this flow.
+  `parseIdToken()` in `core.ts` still checks `iss`, `aud`, `exp` (60 s skew),
+  `nonce` (constant time) and that `email_verified` is boolean `true` — Google
+  issues `false` for some non-Gmail identities, and anything but `true` is a
+  failure. It is the pure half and is fully covered by `auth.test.mjs`.
+- **Matching, then pinning.** `userForGoogle(sub, email)` looks up by
+  `google_sub` first (the pinned identity wins) and by `email` second. The
+  callback refuses a missing user, a user who is not `active`, and a user whose
+  `google_sub` is already another value (the address changed hands on Google's
+  side). The first successful match with a `NULL` `google_sub` is linked
+  (`linkGoogle()`, audited as `google.linked`); from then on it is the `sub`,
+  not the address, that opens the account.
+- **Every outcome is a redirect and the failure codes are a closed map**
+  (`GoogleFailure`: `cancelled | state | unknown | failed`). The query value
+  is filtered through `googleFailureFromQuery()` before it is ever used in a
+  `Location` header or rendered, so nothing is reflected. Success always lands
+  on `/admin`: there is no `next` parameter, and this feature does not add one.
+  A Postgres error or a slow Google (`AbortSignal.timeout(5000)`) is
+  `?google=failed`, never a `500`.
+- **Fresh session, fresh CSRF cookie**, through `startSession()` and
+  `setSessionCookies()` — the same code the password form runs, so a
+  pre-authentication value is never promoted into a session (fixation).
+- **Rate limited per IP** (`20 per 5 min`, in memory) on the callback: no
+  scrypt here, so the lever is not CPU but the audit log.
+- **Inert without `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`** (read once in
+  `google.ts`): the button is not rendered and both routes answer `404`. CI
+  therefore never renders the Google branch of `entrar.astro`; the `.error`
+  block is shared so the `gate:web` budget stays representative. Setup and
+  the Testing-mode trap are in
+  [deployment.md](./deployment.md#runtime-env-google-sign-in).
+
+`unknown` tells the person that *their own* Google account is not in the
+newsroom, which enumerates nobody else — unlike the password form, whose single
+message has to stay generic.
 
 Rate limits are in-memory, per process, sliding window — the same `RateLimiter`
 shape the newsletter uses, declared in `core.ts`:
@@ -453,6 +548,13 @@ A table, not a ladder of `if`s, so it can be read at a glance and tested whole
 | `story:publish` | — | ✅ | ✅ |
 | `user:invite` | — | — | ✅ |
 | `user:role` | — | — | ✅ |
+| `mcp:token` | ✅ | ✅ | ✅ |
+
+`mcp:token` is on all three rows because minting a key for one's own Claude
+client is not a privileged act, and what the key may do is bounded twice over —
+by its scopes and by the role of whoever holds it. It is still a permission of
+its own so that "who may point a credential at the public internet" has an
+answer that can be narrowed tomorrow without touching a page.
 
 `story:*` are declared but nothing consumes them yet — story editing is a later
 feature. `user:role` likewise has no page today. Checks are always server-side
@@ -478,8 +580,11 @@ the action it audits** — a failed insert is logged and swallowed — and the a
 is nullable on purpose, because a failed sign-in has no user and is exactly the
 kind of thing worth recording.
 
-Actions written today: `login.ok`, `login.failed`, `logout`, `user.invited`,
-`user.accepted_invite`, `profile.updated`, `password.reset`.
+Actions written today: `login.ok` (payload `provider: password | google`),
+`login.failed` (Google refusals carry `provider: 'google'` and a `reason`),
+`logout`, `user.invited`, `user.accepted_invite`, `profile.updated`,
+`password.reset`, `google.linked`, `mcp.token.issued`, `mcp.token.revoked`,
+`mcp.draft.created`, `mcp.draft.updated`.
 
 ### Data model
 
@@ -489,11 +594,12 @@ by `002_newsletter`.
 
 | Table | Columns |
 | --- | --- |
-| `users` | `id` PK, `email` `citext` UNIQUE, `password_hash` (the `scrypt$…` string), `role` (`journalist\|editor\|owner`, default `journalist`), `status` (`invited\|active\|suspended`, default `invited`), `author_id` → `authors(id)` `ON DELETE SET NULL`, `created_at`, `updated_at`, `last_login_at` |
+| `users` | `id` PK, `email` `citext` UNIQUE, `password_hash` (the `scrypt$…` string), `role` (`journalist\|editor\|owner`, default `journalist`), `status` (`invited\|active\|suspended`, default `invited`), `author_id` → `authors(id)` `ON DELETE SET NULL`, `created_at`, `updated_at`, `last_login_at`; since `006_google_identity`: `google_sub` (nullable, partial UNIQUE index `WHERE google_sub IS NOT NULL`) and `google_linked_at` |
 | `invites` | `id` PK, `email` `citext`, `role`, `token_hash` UNIQUE, `invited_by` → `users(id)`, `expires_at`, `accepted_at`, `created_at`; partial index on `email WHERE accepted_at IS NULL` |
 | `sessions` | `id` PK, `user_id` → `users(id)` `ON DELETE CASCADE`, `token_hash` UNIQUE, `created_at`, `last_seen_at`, `expires_at`, `revoked_at`, `ip`, `user_agent`; partial index on `user_id WHERE revoked_at IS NULL` |
 | `password_resets` | `id` PK, `user_id` → `users(id)` `ON DELETE CASCADE`, `token_hash` UNIQUE, `expires_at`, `used_at`, `created_at` |
 | `audit_log` | `id` PK, `actor_id` → `users(id)` `ON DELETE SET NULL` (nullable), `action`, `entity`, `entity_id`, `payload jsonb`, `ip`, `at`; index on `at DESC` |
+| `mcp_tokens` | `id` PK, `user_id` → `users(id)` `ON DELETE CASCADE`, `name`, `token_hash` UNIQUE (sha256 hex), `scopes text[]` (`content:read` \| `stories:write`, `<@`-constrained, default read-only), `created_at`, `expires_at` (NULL = never), `last_used_at`, `revoked_at`; partial index on `user_id WHERE revoked_at IS NULL`. Added by `005_mcp_tokens.sql` — see [mcp.md](./mcp.md) |
 
 `users.author_id` is the join between the private account and the public
 by-line, and it is deliberately loose in both directions: **a user without an
@@ -577,6 +683,7 @@ not painted is cosmetics, and the id is in the URL:
 | `getDraft(id)` | `StoryDraft \| null` — the row plus one `i18n` entry per existing locale row, carrying `bodyMd` (the Markdown source, never the HTML) and `videoId` (`string \| null`, language-neutral) |
 | `createStory(authorId, topicId)` | the new id, `st-<base36 time>-<base36 random>`, inserted as `draft` with `slug = id` and `reading_minutes = 1`. A timestamped id sorts by itself and does not depend on a headline, which changes a lot before publication |
 | `saveStory(input)` | `void`. One transaction: `stories` (topic, relevance, `reading_minutes`, `video_id`, `updated_at`) plus an upsert of one `story_i18n` row (title, standfirst, `body_md`, `body_html`). It renders the Markdown itself; it never publishes and never touches the slug. `reading_minutes` is recomputed from the body just saved. `videoId` is written exactly as handed over — `null` clears the video — so the "empty the field to remove it" path has no `COALESCE` cleverness in it; deciding what to do with an unparseable link is the page's job |
+| `discardEmptyStory(id)` | `void`. Undoes a `createStory()` whose `saveStory()` never landed, and nothing else: it deletes only a `draft` with no `story_i18n` row in any language, a row no reader and no editor ever wanted. Used by the MCP `create_draft` (see [mcp.md](./mcp.md)), so a failed write does not leave a `(sin título)` per retry. Deliberately narrow so it can never widen into a delete-story tool |
 | `publish(id, defaultLocale, lead)` | `'ok' \| 'sin-titulo' \| 'slug-repetido'` — the two failures write nothing |
 | `unpublish(id)` | `void`: `status='draft'`, `lead=false`. **Deletes nothing** — pulling a story and losing it are different things |
 
@@ -727,6 +834,37 @@ The video is a **story field, not Markdown**. `renderMarkdown` still emits no
 images and no raw HTML, and nothing about its allowed subset changed: pasting a
 YouTube link into the body still produces an `<a>`, and the player only ever
 comes from `video_id`.
+
+## MCP server
+
+`POST /api/mcp` lets Claude, running in somebody else's client, read the portal
+and write drafts in it. It is the same node process, the same tables and the
+same permission model — full detail, including the eight tools and the client
+configuration, is in [mcp.md](./mcp.md).
+
+```
+src/lib/mcp/protocol.ts            envelope, versions, scopes, tool catalogue, validation
+src/lib/mcp/tools.ts               what the tools do (reads through the snapshot)
+src/pages/api/mcp.ts               the endpoint: auth, rate limits, dispatch
+src/pages/admin/mcp.astro          minting and revoking keys
+src/migrations/005_mcp_tokens.sql  the mcp_tokens table
+src/locales/mcp.test.mjs           the tests for protocol.ts
+```
+
+Four properties worth knowing without opening that document:
+
+- **Writing stops at `draft`.** There is no publish tool, `stories:write` is a
+  separate scope that is off by default, and `update_draft` refuses a published
+  story. The snapshot only loads published rows, so a draft written over MCP is
+  invisible to readers by construction.
+- **Read tools never query Postgres**: they go through
+  `src/lib/content/store.ts`, like every page.
+- **`protocol.ts` has zero relative imports** so `node --test` can load it
+  through `src/lib/load-ts.mjs`; that is why `buildTools()` receives the locale
+  list instead of importing `config.json`, exactly as `dayLabel()` receives its
+  Intl tag.
+- **No CORS header, no `Origin` comparison, ever** — re-adding one re-adds the
+  `403` that forced `checkOrigin: false`.
 
 ## Newsletter (double opt-in)
 
@@ -908,6 +1046,18 @@ Two different things, and they live in two different places.
   headline is a row, not interface copy: it lives in `story_i18n` /
   `topic_i18n` / `author_i18n`, never in a locale file.
 
+- **Protocol strings** — a third category, created by the MCP server: tool
+  names, tool descriptions, the `instructions` of `initialize`, JSON-RPC error
+  messages and the plain-English text of an `isError` result. They are
+  **English only and are not a merge blocker**, because they are read by a model
+  and by a developer and their field names are fixed English in the MCP schema.
+  The precedent is already in the repo: `GET /api/newsletter` answers with the
+  hardcoded `'POST {email, locale}'` while every reader-facing message in the
+  same file goes through `t(locale, 'newsletter.*')`. Bilingualism lives instead
+  in the `locale` argument every tool takes, which returns real `story_i18n`
+  rows in the requested language. `/admin/mcp`, being a page a person reads, is
+  ordinary UI chrome and is fully bilingual (`admin.mcp.*`).
+
 `src/locales/content.test.mjs` enforces both halves against the seed
 (`seed.data.json`), which is what a fresh database is loaded with:
 
@@ -1084,6 +1234,16 @@ an older label names the day it heads — the classic failure of formatting
 midnight UTC. It also asserts `ZONA === 'Europe/Madrid'` and that passing another
 zone yields another day, i.e. that the zone is a parameter and not a hardcoded
 assumption.
+
+`mcp.test.mjs` covers `src/lib/mcp/protocol.ts`, and its first assertion is the
+one that matters: exactly `create_draft` and `update_draft` carry
+`stories:write`, every other tool is `content:read`, and no tool is named
+`publish_*`. It also pins the id-of-`0` notification trap, bearer parsing,
+version negotiation, that each schema's `locale` enum comes from the argument
+(so adding a language is a `config.json` edit) and the hand-rolled argument
+validator. What needs a database — the merge in `update_draft`, the scope
+`CHECK`, revocation, suspension — is verified by hand against a scratch
+Postgres, as [mcp.md](./mcp.md) records.
 
 `youtube.test.mjs` guards the other author-controlled string that reaches an
 attribute, so it is mostly rejections too: a host that merely *contains*
